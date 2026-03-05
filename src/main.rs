@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod ui;
+
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use dioxus::desktop::{Config as DesktopConfig, WindowBuilder, tao::window::Icon};
@@ -17,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
+use ui::{ApiPanel, DashboardPanel, ToastViewport, TrackingPanels};
 
 const API_BASE: &str = "https://arctracker.io";
 const LOCAL_DATA_DEFAULT_DIR: &str = "vendor/arcraiders-data";
@@ -245,7 +248,7 @@ fn api_retry_config() -> &'static ApiRetryConfig {
     API_RETRY_CONFIG.get_or_init(ApiRetryConfig::from_env)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct ArcData {
     items_by_id: HashMap<String, Item>,
     craftable_items: Vec<Item>,
@@ -255,7 +258,7 @@ struct ArcData {
     local_images_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Item {
     id: String,
@@ -275,14 +278,14 @@ struct Item {
     value: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct ItemRequirement {
     item_id: String,
     quantity: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Quest {
     id: String,
@@ -292,7 +295,7 @@ struct Quest {
     required_item_ids: Vec<ItemRequirement>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct HideoutLevel {
     level: u32,
@@ -300,7 +303,7 @@ struct HideoutLevel {
     requirement_item_ids: Vec<ItemRequirement>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct HideoutModule {
     id: String,
@@ -312,7 +315,7 @@ struct HideoutModule {
     levels: Vec<HideoutLevel>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct ProjectPhase {
     phase: u32,
@@ -320,7 +323,7 @@ struct ProjectPhase {
     requirement_item_ids: Vec<ItemRequirement>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Project {
     id: String,
@@ -374,7 +377,7 @@ struct TrackedProject {
     target_phase: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct NeedRow {
     name: String,
     image_src: String,
@@ -383,7 +386,7 @@ struct NeedRow {
     missing: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct SellRow {
     name: String,
     image_src: String,
@@ -391,14 +394,14 @@ struct SellRow {
     total_value: u64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Dashboard {
     needs: Vec<NeedRow>,
     keep: Vec<NeedRow>,
     sell: Vec<SellRow>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct UserProfileInfo {
     username: String,
     level: Option<u32>,
@@ -426,6 +429,30 @@ struct ApiDiagnosticRow {
     request_id: Option<String>,
     detail: String,
     ok: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct OperationProgress {
+    label: String,
+    detail: String,
+    current: u32,
+    total: u32,
+    indeterminate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ToastKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Toast {
+    id: u64,
+    kind: ToastKind,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -516,13 +543,13 @@ fn App() -> Element {
     let show_planning_workspace = use_signal(move || initial_show_planning_workspace);
     let mut dashboard_filter = use_signal(String::new);
 
-    let mut craft_pick = use_signal(String::new);
-    let mut craft_qty = use_signal(|| "1".to_string());
-    let mut quest_pick = use_signal(String::new);
-    let mut hideout_pick = use_signal(String::new);
-    let mut hideout_level = use_signal(|| "1".to_string());
-    let mut project_pick = use_signal(String::new);
-    let mut project_phase = use_signal(|| "1".to_string());
+    let craft_pick = use_signal(String::new);
+    let craft_qty = use_signal(|| "1".to_string());
+    let quest_pick = use_signal(String::new);
+    let hideout_pick = use_signal(String::new);
+    let hideout_level = use_signal(|| "1".to_string());
+    let project_pick = use_signal(String::new);
+    let project_phase = use_signal(|| "1".to_string());
 
     let loading_data = use_signal(|| false);
     let scanning_inventory = use_signal(|| false);
@@ -533,6 +560,8 @@ fn App() -> Element {
     let diagnostics_running = use_signal(|| false);
     let diagnostics_rows = use_signal(Vec::<ApiDiagnosticRow>::new);
     let diagnostics_report = use_signal(String::new);
+    let operation_progress = use_signal(|| Option::<OperationProgress>::None);
+    let toasts = use_signal(Vec::<Toast>::new);
     let status_message = use_signal(String::new);
     let error_message = use_signal(String::new);
 
@@ -545,6 +574,8 @@ fn App() -> Element {
     let projects_snapshot = tracked_projects.read().clone();
     let diagnostics_rows_snapshot = diagnostics_rows.read().clone();
     let diagnostics_report_snapshot = diagnostics_report.read().clone();
+    let progress_snapshot = operation_progress.read().clone();
+    let toasts_snapshot = toasts.read().clone();
 
     let required_items = if let Some(data) = data_snapshot.as_ref() {
         aggregate_requirements(
@@ -647,12 +678,18 @@ fn App() -> Element {
     let sell_total_qty: u32 = dashboard.sell.iter().map(|row| row.quantity).sum();
     let sell_total_value: u64 = dashboard.sell.iter().map(|row| row.total_value).sum();
     let missing_total: u32 = dashboard.needs.iter().map(|row| row.missing).sum();
+    let need_item_types = dashboard.needs.len() as u32;
+    let keep_item_types = dashboard.keep.len() as u32;
+    let sell_item_types = dashboard.sell.len() as u32;
+    let keep_total_qty: u32 = dashboard.keep.iter().map(|row| row.required).sum();
 
     let load_data_action = {
         let static_data = static_data.clone();
         let mut loading_data = loading_data.clone();
         let mut status_message = status_message.clone();
         let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
         move |_| {
             if *loading_data.read() {
                 return;
@@ -661,11 +698,25 @@ fn App() -> Element {
             loading_data.set(true);
             error_message.set(String::new());
             status_message.set("Loading static items/quests/hideout/projects...".to_string());
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                "Loading static data...".to_string(),
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "Loading game data".to_string(),
+                detail: "Fetching items, quests, hideout and projects".to_string(),
+                current: 0,
+                total: 1,
+                indeterminate: false,
+            }));
 
             let mut static_data = static_data.clone();
             let mut loading_data = loading_data.clone();
             let mut status_message = status_message.clone();
             let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
 
             spawn(async move {
                 info!("load_data_action: loading static data");
@@ -682,6 +733,11 @@ fn App() -> Element {
                         status_message.set(format!(
                             "Loaded {item_count} items and requirement datasets from {source_label}."
                         ));
+                        enqueue_toast(
+                            toasts,
+                            ToastKind::Success,
+                            format!("Loaded {item_count} items from {source_label}."),
+                        );
                         info!(
                             item_count,
                             source = source_label,
@@ -690,9 +746,12 @@ fn App() -> Element {
                     }
                     Err(err) => {
                         error!(error = %err, "load_data_action: failed to load static data");
-                        error_message.set(format!("Failed to load static data: {err}"));
+                        let message = format!("Failed to load static data: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
                     }
                 }
+                operation_progress.set(None);
                 loading_data.set(false);
             });
         }
@@ -705,6 +764,8 @@ fn App() -> Element {
         let mut scanning_inventory = scanning_inventory.clone();
         let mut status_message = status_message.clone();
         let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
         move |_| {
             if *scanning_inventory.read() {
                 return;
@@ -713,6 +774,18 @@ fn App() -> Element {
             scanning_inventory.set(true);
             error_message.set(String::new());
             status_message.set("Scanning stash inventory...".to_string());
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                "Scanning stash inventory...".to_string(),
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "Scanning inventory".to_string(),
+                detail: "Fetching stash pages from ArcTracker".to_string(),
+                current: 0,
+                total: 1,
+                indeterminate: true,
+            }));
 
             let app_key_value = app_key.read().clone();
             let user_key_value = user_key.read().clone();
@@ -721,6 +794,8 @@ fn App() -> Element {
             let mut scanning_inventory = scanning_inventory.clone();
             let mut status_message = status_message.clone();
             let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
 
             spawn(async move {
                 info!("scan_inventory_action: scanning stash");
@@ -733,13 +808,21 @@ fn App() -> Element {
                         status_message.set(format!(
                             "Inventory scan complete: {total} total items across {unique} unique item types."
                         ));
+                        enqueue_toast(
+                            toasts,
+                            ToastKind::Success,
+                            format!("Inventory scan complete: {unique} item types."),
+                        );
                         info!(total, unique, "scan_inventory_action: stash scan complete");
                     }
                     Err(err) => {
                         error!(error = %err, "scan_inventory_action: stash scan failed");
-                        error_message.set(format!("Inventory scan failed: {err}"));
+                        let message = format!("Inventory scan failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
                     }
                 }
+                operation_progress.set(None);
                 scanning_inventory.set(false);
             });
         }
@@ -760,6 +843,8 @@ fn App() -> Element {
         let mut syncing_progress = syncing_progress.clone();
         let mut status_message = status_message.clone();
         let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
         move |_| {
             if *syncing_progress.read() {
                 return;
@@ -778,6 +863,18 @@ fn App() -> Element {
             error_message.set(String::new());
             status_message
                 .set("Syncing profile, stash, loadout, quests, hideout, projects...".to_string());
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                "Syncing ArcTracker progress...".to_string(),
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "Auto-sync progress".to_string(),
+                detail: "Syncing profile, loadout, quests, hideout, and projects".to_string(),
+                current: 0,
+                total: 1,
+                indeterminate: true,
+            }));
 
             let app_key_value = app_key.read().clone();
             let user_key_value = user_key.read().clone();
@@ -793,6 +890,8 @@ fn App() -> Element {
             let mut syncing_progress = syncing_progress.clone();
             let mut status_message = status_message.clone();
             let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
 
             spawn(async move {
                 info!("auto_sync_action: syncing profile/stash/loadout/quests/hideout/projects");
@@ -887,6 +986,22 @@ fn App() -> Element {
                             );
                         }
                         status_message.set(summary);
+                        if sync.warnings.is_empty() {
+                            enqueue_toast(
+                                toasts,
+                                ToastKind::Success,
+                                "Auto-sync completed successfully.".to_string(),
+                            );
+                        } else {
+                            enqueue_toast(
+                                toasts,
+                                ToastKind::Warning,
+                                format!(
+                                    "Auto-sync completed with {} warning(s).",
+                                    sync.warnings.len()
+                                ),
+                            );
+                        }
                     }
                     Err(err) => {
                         requirements_data_ready.set(false);
@@ -895,9 +1010,12 @@ fn App() -> Element {
                                 .to_string(),
                         );
                         error!(error = %err, "auto_sync_action: sync failed");
-                        error_message.set(format!("Auto-sync failed: {err}"));
+                        let message = format!("Auto-sync failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
                     }
                 }
+                operation_progress.set(None);
                 syncing_progress.set(false);
             });
         }
@@ -911,6 +1029,8 @@ fn App() -> Element {
         let mut diagnostics_report = diagnostics_report.clone();
         let mut status_message = status_message.clone();
         let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
         move |_| {
             if *diagnostics_running.read() {
                 return;
@@ -921,6 +1041,18 @@ fn App() -> Element {
             diagnostics_report.set(String::new());
             error_message.set(String::new());
             status_message.set("Running API diagnostics...".to_string());
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                "Running API diagnostics...".to_string(),
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "API diagnostics".to_string(),
+                detail: "Checking endpoint availability".to_string(),
+                current: 0,
+                total: 8,
+                indeterminate: false,
+            }));
 
             let app_key_value = app_key.read().clone();
             let user_key_value = user_key.read().clone();
@@ -930,11 +1062,29 @@ fn App() -> Element {
             let mut diagnostics_report = diagnostics_report.clone();
             let mut status_message = status_message.clone();
             let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
 
             spawn(async move {
                 info!("api_diagnostics: starting run");
                 let client = Client::new();
-                match run_api_diagnostics(&client, &app_key_value, &user_key_value).await {
+                let mut progress_signal = operation_progress.clone();
+                match run_api_diagnostics(
+                    &client,
+                    &app_key_value,
+                    &user_key_value,
+                    |done, total, endpoint| {
+                        progress_signal.set(Some(OperationProgress {
+                            label: "API diagnostics".to_string(),
+                            detail: format!("Checked {endpoint}"),
+                            current: done as u32,
+                            total: total as u32,
+                            indeterminate: false,
+                        }));
+                    },
+                )
+                .await
+                {
                     Ok(rows) => {
                         let failed = rows.iter().filter(|row| !row.ok).count();
                         let passed = rows.len().saturating_sub(failed);
@@ -946,6 +1096,11 @@ fn App() -> Element {
                             status_message.set(format!(
                                 "API diagnostics complete: {passed} passed, 0 failed."
                             ));
+                            enqueue_toast(
+                                toasts,
+                                ToastKind::Success,
+                                format!("API diagnostics passed ({passed}/{passed})."),
+                            );
                         } else {
                             warn!(
                                 passed,
@@ -954,13 +1109,21 @@ fn App() -> Element {
                             status_message.set(format!(
                                 "API diagnostics complete: {passed} passed, {failed} failed."
                             ));
+                            enqueue_toast(
+                                toasts,
+                                ToastKind::Warning,
+                                format!("API diagnostics found {failed} failing endpoint(s)."),
+                            );
                         }
                     }
                     Err(err) => {
                         error!(error = %err, "api_diagnostics: failed");
-                        error_message.set(format!("API diagnostics failed: {err}"));
+                        let message = format!("API diagnostics failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
                     }
                 }
+                operation_progress.set(None);
                 diagnostics_running.set(false);
             });
         }
@@ -984,6 +1147,8 @@ fn App() -> Element {
         let mut startup_sync_started = startup_sync_started.clone();
         let status_message = status_message.clone();
         let error_message = error_message.clone();
+        let operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
         use_effect(move || {
             if *startup_sync_started.read() {
                 return;
@@ -1011,6 +1176,8 @@ fn App() -> Element {
             let mut syncing_progress = syncing_progress.clone();
             let mut status_message = status_message.clone();
             let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
 
             spawn(async move {
                 info!("startup_sync: starting automatic startup load/scan/sync");
@@ -1021,13 +1188,22 @@ fn App() -> Element {
                 syncing_progress.set(true);
                 error_message.set(String::new());
                 status_message.set("Startup sync: loading static data...".to_string());
+                operation_progress.set(Some(OperationProgress {
+                    label: "Startup sync".to_string(),
+                    detail: "Loading static game data".to_string(),
+                    current: 0,
+                    total: 3,
+                    indeterminate: false,
+                }));
 
                 let data = match fetch_static_data(&client).await {
                     Ok(data) => data,
                     Err(err) => {
                         error!(error = %err, "startup_sync: failed while loading static data");
-                        error_message
-                            .set(format!("Startup sync failed loading static data: {err}"));
+                        let message = format!("Startup sync failed loading static data: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                        operation_progress.set(None);
                         loading_data.set(false);
                         scanning_inventory.set(false);
                         syncing_progress.set(false);
@@ -1037,6 +1213,13 @@ fn App() -> Element {
 
                 let data_arc = Arc::new(data);
                 static_data.set(Some(Arc::clone(&data_arc)));
+                operation_progress.set(Some(OperationProgress {
+                    label: "Startup sync".to_string(),
+                    detail: "Scanning stash inventory".to_string(),
+                    current: 1,
+                    total: 3,
+                    indeterminate: false,
+                }));
 
                 status_message.set("Startup sync: scanning stash inventory...".to_string());
                 let mut startup_warnings = Vec::new();
@@ -1056,6 +1239,13 @@ fn App() -> Element {
                 }
 
                 status_message.set("Startup sync: syncing profile and progress...".to_string());
+                operation_progress.set(Some(OperationProgress {
+                    label: "Startup sync".to_string(),
+                    detail: "Syncing profile and progression".to_string(),
+                    current: 2,
+                    total: 3,
+                    indeterminate: false,
+                }));
                 match sync_user_progress(
                     &client,
                     &app_key_value,
@@ -1132,6 +1322,14 @@ fn App() -> Element {
                                 warnings = startup_warnings.len(),
                                 "startup_sync: completed with warnings"
                             );
+                            enqueue_toast(
+                                toasts,
+                                ToastKind::Warning,
+                                format!(
+                                    "Startup sync completed with {} warning(s).",
+                                    startup_warnings.len()
+                                ),
+                            );
                         } else {
                             info!(
                                 quests = quest_total,
@@ -1139,6 +1337,11 @@ fn App() -> Element {
                                 projects = project_total,
                                 loadout = loadout_total,
                                 "startup_sync: completed"
+                            );
+                            enqueue_toast(
+                                toasts,
+                                ToastKind::Success,
+                                "Startup sync completed.".to_string(),
                             );
                         }
                         status_message.set(summary);
@@ -1150,10 +1353,13 @@ fn App() -> Element {
                                 .to_string(),
                         );
                         error!(error = %err, "startup_sync: sync failed");
-                        error_message.set(format!("Startup sync failed: {err}"));
+                        let message = format!("Startup sync failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
                     }
                 }
 
+                operation_progress.set(None);
                 loading_data.set(false);
                 scanning_inventory.set(false);
                 syncing_progress.set(false);
@@ -1226,539 +1432,63 @@ fn App() -> Element {
                 }
             }
 
-            div { class: "panel",
-                h2 { "API + Sync" }
-                p { class: "muted", "App key from .env: {app_key_masked}" }
-                label { "User key (arc_u1_...):" }
-                input {
-                    value: "{user_key.read()}",
-                    placeholder: "arc_u1_your_user_key",
-                    oninput: move |evt| user_key.set(evt.value()),
-                }
-                div { class: "actions",
-                    button {
-                        disabled: *loading_data.read(),
-                        onclick: load_data_action,
-                        if *loading_data.read() { "Loading Data..." } else { "Load / Refresh Game Data" }
-                    }
-                    button {
-                        disabled: *scanning_inventory.read(),
-                        onclick: scan_inventory_action,
-                        if *scanning_inventory.read() { "Scanning..." } else { "Scan Inventory" }
-                    }
-                    button {
-                        disabled: *syncing_progress.read(),
-                        onclick: auto_sync_action,
-                        if *syncing_progress.read() { "Syncing..." } else { "Auto Sync Progress" }
-                    }
-                    button {
-                        disabled: *diagnostics_running.read(),
-                        onclick: api_diagnostics_action,
-                        if *diagnostics_running.read() { "Running Diagnostics..." } else { "Run API Diagnostics" }
-                    }
-                }
-                if let Some(profile) = profile_info.read().as_ref() {
-                    p { class: "muted",
-                        if let Some(level) = profile.level {
-                            "User: {profile.username} (Level {level})"
-                        } else {
-                            "User: {profile.username}"
-                        }
-                        if let Some(member_since) = profile.member_since.as_ref() {
-                            " | Member since: {member_since}"
-                        }
-                    }
-                }
-                if !status_message.read().is_empty() {
-                    p { class: "status", "{status_message.read()}" }
-                }
-                if !error_message.read().is_empty() {
-                    p { class: "error", "{error_message.read()}" }
-                }
-                if !diagnostics_rows_snapshot.is_empty() {
-                    h3 { "API Diagnostics Report" }
-                    table { class: "table compact diagnostics-table",
-                        thead {
-                            tr {
-                                th { "Endpoint" }
-                                th { "Status" }
-                                th { "Request ID" }
-                                th { "Details" }
-                            }
-                        }
-                        tbody {
-                            for row in diagnostics_rows_snapshot.iter() {
-                                tr {
-                                    td { "{row.endpoint}" }
-                                    td { if row.ok { "OK (200)" } else { "{row.status_code}" } }
-                                    td { "{row.request_id.clone().unwrap_or_else(|| \"-\".to_string())}" }
-                                    td { "{row.detail}" }
-                                }
-                            }
-                        }
-                    }
-                }
-                if !diagnostics_report_snapshot.is_empty() {
-                    p { class: "muted", "Copy and share this report with ArcTracker support if needed:" }
-                    pre { class: "diagnostics-report", "{diagnostics_report_snapshot}" }
-                }
+            ApiPanel {
+                app_key_masked: app_key_masked.clone(),
+                user_key: user_key.read().clone(),
+                on_user_key_input: move |evt: FormEvent| user_key.set(evt.value()),
+                loading_data: *loading_data.read(),
+                scanning_inventory: *scanning_inventory.read(),
+                syncing_progress: *syncing_progress.read(),
+                diagnostics_running: *diagnostics_running.read(),
+                on_load_data: load_data_action,
+                on_scan_inventory: scan_inventory_action,
+                on_auto_sync: auto_sync_action,
+                on_run_diagnostics: api_diagnostics_action,
+                profile: profile_info.read().clone(),
+                status_message: status_message.read().clone(),
+                error_message: error_message.read().clone(),
+                diagnostics_rows: diagnostics_rows_snapshot.clone(),
+                diagnostics_report: diagnostics_report_snapshot.clone(),
+                progress: progress_snapshot.clone(),
             }
 
             if data_loaded {
-                div { class: "panel dashboard-panel",
-                    h2 { "Dashboard" }
-                    p { class: "muted", "Compares scanned inventory against all tracked requirements. Prioritizing what you can sell first." }
-                    div { class: "dashboard-toolbar",
-                        input {
-                            value: "{dashboard_filter.read()}",
-                            placeholder: "Filter items in dashboard and requirements...",
-                            oninput: move |evt| dashboard_filter.set(evt.value()),
-                        }
-                    }
-                    div { class: "stats-grid",
-                        div { class: "stat-chip",
-                            p { class: "dash-num", "Sell Qty" }
-                            strong { "{sell_total_qty}" }
-                        }
-                        div { class: "stat-chip",
-                            p { class: "dash-num", "Sell Value" }
-                            strong { "{sell_total_value}" }
-                        }
-                        div { class: "stat-chip",
-                            p { class: "dash-num", "Missing Items" }
-                            strong { "{missing_total}" }
-                        }
-                    }
-
-                    div { class: "dashboard-priority",
-                        div { class: "dashboard-card can-sell-card",
-                            h3 { "Can Sell" }
-                            if suppress_sell_recommendations {
-                                p {
-                                    class: "muted",
-                                    if requirements_data_issue.read().is_empty() {
-                                        "Sell suggestions are paused because full progress data is not available."
-                                    } else {
-                                        "{requirements_data_issue.read()}"
-                                    }
-                                }
-                            }
-                            table { class: "table compact",
-                                thead { tr { th { "Item" } th { "Qty" } th { "Value" } } }
-                                tbody {
-                                    if suppress_sell_recommendations {
-                                        tr { td { colspan: "3", class: "muted", "Paused to avoid inaccurate sell recommendations." } }
-                                    } else if sell_rows_filtered.is_empty() {
-                                        tr { td { colspan: "3", class: "muted", "No excess items to suggest selling." } }
-                                    }
-                                    for row in sell_rows_filtered.iter().take(40) {
-                                        tr {
-                                            td {
-                                                div { class: "item-cell",
-                                                    if !row.image_src.is_empty() {
-                                                        img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
-                                                    }
-                                                    span { "{row.name}" }
-                                                }
-                                            }
-                                            td { "{row.quantity}" }
-                                            td { "{row.total_value}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "dashboard-secondary",
-                        div { class: "dashboard-card",
-                            h3 { "Need To Find" }
-                            table { class: "table compact",
-                                thead { tr { th { "Item" } th { "Missing" } th { "Have/Need" } } }
-                                tbody {
-                                    if need_rows_filtered.is_empty() {
-                                        tr { td { colspan: "3", class: "muted", "No missing items based on current tracking." } }
-                                    }
-                                    for row in need_rows_filtered.iter().take(20) {
-                                        tr {
-                                            td {
-                                                div { class: "item-cell",
-                                                    if !row.image_src.is_empty() {
-                                                        img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
-                                                    }
-                                                    span { "{row.name}" }
-                                                }
-                                            }
-                                            td { "{row.missing}" }
-                                            td { "{row.have}/{row.required}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        div { class: "dashboard-card",
-                            h3 { "Keep In Stash" }
-                            table { class: "table compact",
-                                thead { tr { th { "Item" } th { "Need" } th { "Have" } } }
-                                tbody {
-                                    if keep_rows_filtered.is_empty() {
-                                        tr { td { colspan: "3", class: "muted", "No tracked requirement items yet." } }
-                                    }
-                                    for row in keep_rows_filtered.iter().take(20) {
-                                        tr {
-                                            td {
-                                                div { class: "item-cell",
-                                                    if !row.image_src.is_empty() {
-                                                        img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
-                                                    }
-                                                    span { "{row.name}" }
-                                                }
-                                            }
-                                            td { "{row.required}" }
-                                            td { "{row.have}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                DashboardPanel {
+                    suppress_sell_recommendations,
+                    requirements_data_issue: requirements_data_issue.read().clone(),
+                    dashboard_filter: dashboard_filter.read().clone(),
+                    on_dashboard_filter_input: move |evt: FormEvent| dashboard_filter.set(evt.value()),
+                    sell_total_qty,
+                    sell_total_value,
+                    missing_total,
+                    need_item_types,
+                    keep_item_types,
+                    sell_item_types,
+                    keep_total_qty,
+                    sell_rows: sell_rows_filtered.clone(),
+                    need_rows: need_rows_filtered.clone(),
+                    keep_rows: keep_rows_filtered.clone(),
                 }
 
-                if *show_planning_workspace.read() {
-                    div { class: "grid-two",
-                    div { class: "panel",
-                        h2 { "Track Crafts" }
-                        p { class: "muted", "Pick a craftable item and how many outputs you want to build." }
-                        div { class: "row",
-                            select {
-                                value: "{craft_pick.read()}",
-                                onchange: move |evt| craft_pick.set(evt.value()),
-                                option { value: "", "Select craft item..." }
-                                for item in data_snapshot.as_ref().map(|d| d.craftable_items.clone()).unwrap_or_default() {
-                                    option { value: "{item.id}", "{localized_en(&item.name)}" }
-                                }
-                            }
-                            input {
-                                value: "{craft_qty.read()}",
-                                r#type: "number",
-                                min: "1",
-                                oninput: move |evt| craft_qty.set(evt.value()),
-                            }
-                            button {
-                                onclick: {
-                                    let craft_pick = craft_pick.clone();
-                                    let craft_qty = craft_qty.clone();
-                                    let mut tracked_crafts = tracked_crafts.clone();
-                                    move |_| {
-                                        let item_id = craft_pick.read().trim().to_string();
-                                        if item_id.is_empty() {
-                                            return;
-                                        }
-                                        let qty = parse_u32_or_default(&craft_qty.read(), 1).max(1);
-                                        let mut crafts = tracked_crafts.write();
-                                        if let Some(existing) = crafts.iter_mut().find(|entry| entry.item_id == item_id) {
-                                            existing.quantity = existing.quantity.saturating_add(qty);
-                                        } else {
-                                            crafts.push(TrackedCraft { item_id, quantity: qty });
-                                        }
-                                    }
-                                },
-                                "Add"
-                            }
-                        }
-
-                        table {
-                            class: "table",
-                            thead {
-                                tr {
-                                    th { "Item" }
-                                    th { "Qty" }
-                                    th { "" }
-                                }
-                            }
-                            tbody {
-                                if crafts_snapshot.is_empty() {
-                                    tr { td { colspan: "3", class: "muted", "No tracked crafts yet." } }
-                                }
-                                for (idx, craft) in crafts_snapshot.iter().enumerate() {
-                                    tr {
-                                        td { "{data_snapshot.as_ref().map(|d| item_name(d, &craft.item_id)).unwrap_or_else(|| craft.item_id.clone())}" }
-                                        td { "{craft.quantity}" }
-                                        td {
-                                            button {
-                                                class: "danger",
-                                                onclick: {
-                                                    let mut tracked_crafts = tracked_crafts.clone();
-                                                    move |_| {
-                                                        tracked_crafts.write().remove(idx);
-                                                    }
-                                                },
-                                                "Remove"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "panel",
-                        h2 { "Track Quests" }
-                        p { class: "muted", "Add quests you want item requirements for." }
-                        div { class: "row",
-                            select {
-                                value: "{quest_pick.read()}",
-                                onchange: move |evt| quest_pick.set(evt.value()),
-                                option { value: "", "Select quest..." }
-                                for quest in data_snapshot.as_ref().map(|d| d.quests.clone()).unwrap_or_default() {
-                                    option { value: "{quest.id}", "{localized_en(&quest.name)}" }
-                                }
-                            }
-                            button {
-                                onclick: {
-                                    let quest_pick = quest_pick.clone();
-                                    let mut tracked_quests = tracked_quests.clone();
-                                    move |_| {
-                                        let quest_id = quest_pick.read().trim().to_string();
-                                        if quest_id.is_empty() {
-                                            return;
-                                        }
-                                        let mut quests = tracked_quests.write();
-                                        if !quests.contains(&quest_id) {
-                                            quests.push(quest_id);
-                                        }
-                                    }
-                                },
-                                "Add"
-                            }
-                        }
-
-                        table {
-                            class: "table",
-                            thead { tr { th { "Quest" } th { "" } } }
-                            tbody {
-                                if quests_snapshot.is_empty() {
-                                    tr { td { colspan: "2", class: "muted", "No tracked quests." } }
-                                }
-                                for (idx, quest_id) in quests_snapshot.iter().enumerate() {
-                                    tr {
-                                        td { "{data_snapshot.as_ref().map(|d| quest_name(d, quest_id)).unwrap_or_else(|| quest_id.clone())}" }
-                                        td {
-                                            button {
-                                                class: "danger",
-                                                onclick: {
-                                                    let mut tracked_quests = tracked_quests.clone();
-                                                    move |_| {
-                                                        tracked_quests.write().remove(idx);
-                                                    }
-                                                },
-                                                "Remove"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                    div { class: "grid-two",
-                    div { class: "panel",
-                        h2 { "Track Hideout Upgrades" }
-                        p { class: "muted", "Target level includes all requirements from level 1 up to that level." }
-                        div { class: "row",
-                            select {
-                                value: "{hideout_pick.read()}",
-                                onchange: move |evt| hideout_pick.set(evt.value()),
-                                option { value: "", "Select hideout module..." }
-                                for module in data_snapshot.as_ref().map(|d| d.hideout_modules.clone()).unwrap_or_default() {
-                                    option { value: "{module.id}", "{localized_en(&module.name)}" }
-                                }
-                            }
-                            input {
-                                value: "{hideout_level.read()}",
-                                r#type: "number",
-                                min: "1",
-                                oninput: move |evt| hideout_level.set(evt.value()),
-                            }
-                            button {
-                                onclick: {
-                                    let hideout_pick = hideout_pick.clone();
-                                    let hideout_level = hideout_level.clone();
-                                    let mut tracked_hideout = tracked_hideout.clone();
-                                    let data_snapshot = data_snapshot.clone();
-                                    move |_| {
-                                        let module_id = hideout_pick.read().trim().to_string();
-                                        if module_id.is_empty() {
-                                            return;
-                                        }
-
-                                        let mut level = parse_u32_or_default(&hideout_level.read(), 1).max(1);
-                                        if let Some(data) = data_snapshot.as_ref() {
-                                            if let Some(max_level) = module_max_level(data, &module_id) {
-                                                level = level.min(max_level.max(1));
-                                            }
-                                        }
-
-                                        let mut entries = tracked_hideout.write();
-                                        if let Some(existing) = entries.iter_mut().find(|entry| entry.module_id == module_id) {
-                                            existing.target_level = level;
-                                        } else {
-                                            entries.push(TrackedHideout { module_id, target_level: level });
-                                        }
-                                    }
-                                },
-                                "Add / Update"
-                            }
-                        }
-
-                        table {
-                            class: "table",
-                            thead { tr { th { "Module" } th { "Target" } th { "" } } }
-                            tbody {
-                                if hideout_snapshot.is_empty() {
-                                    tr { td { colspan: "3", class: "muted", "No tracked hideout upgrades." } }
-                                }
-                                for (idx, entry) in hideout_snapshot.iter().enumerate() {
-                                    tr {
-                                        td { "{data_snapshot.as_ref().map(|d| hideout_name(d, &entry.module_id)).unwrap_or_else(|| entry.module_id.clone())}" }
-                                        td { "L{entry.target_level}" }
-                                        td {
-                                            button {
-                                                class: "danger",
-                                                onclick: {
-                                                    let mut tracked_hideout = tracked_hideout.clone();
-                                                    move |_| {
-                                                        tracked_hideout.write().remove(idx);
-                                                    }
-                                                },
-                                                "Remove"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "panel",
-                        h2 { "Track Projects" }
-                        p { class: "muted", "Target phase includes all requirements from phase 1 up to that phase." }
-                        div { class: "row",
-                            select {
-                                value: "{project_pick.read()}",
-                                onchange: move |evt| project_pick.set(evt.value()),
-                                option { value: "", "Select project..." }
-                                for project in data_snapshot.as_ref().map(|d| d.projects.clone()).unwrap_or_default() {
-                                    option { value: "{project.id}", "{localized_en(&project.name)}" }
-                                }
-                            }
-                            input {
-                                value: "{project_phase.read()}",
-                                r#type: "number",
-                                min: "1",
-                                oninput: move |evt| project_phase.set(evt.value()),
-                            }
-                            button {
-                                onclick: {
-                                    let project_pick = project_pick.clone();
-                                    let project_phase = project_phase.clone();
-                                    let mut tracked_projects = tracked_projects.clone();
-                                    let data_snapshot = data_snapshot.clone();
-                                    move |_| {
-                                        let project_id = project_pick.read().trim().to_string();
-                                        if project_id.is_empty() {
-                                            return;
-                                        }
-
-                                        let mut phase = parse_u32_or_default(&project_phase.read(), 1).max(1);
-                                        if let Some(data) = data_snapshot.as_ref() {
-                                            if let Some(max_phase) = project_max_phase(data, &project_id) {
-                                                phase = phase.min(max_phase.max(1));
-                                            }
-                                        }
-
-                                        let mut entries = tracked_projects.write();
-                                        if let Some(existing) = entries.iter_mut().find(|entry| entry.project_id == project_id) {
-                                            existing.start_phase = 1;
-                                            existing.target_phase = phase;
-                                        } else {
-                                            entries.push(TrackedProject { project_id, start_phase: 1, target_phase: phase });
-                                        }
-                                    }
-                                },
-                                "Add / Update"
-                            }
-                        }
-
-                        table {
-                            class: "table",
-                            thead { tr { th { "Project" } th { "Target" } th { "" } } }
-                            tbody {
-                                if projects_snapshot.is_empty() {
-                                    tr { td { colspan: "3", class: "muted", "No tracked projects." } }
-                                }
-                                for (idx, entry) in projects_snapshot.iter().enumerate() {
-                                    tr {
-                                        td { "{data_snapshot.as_ref().map(|d| project_name(d, &entry.project_id)).unwrap_or_else(|| entry.project_id.clone())}" }
-                                        td {
-                                            if entry.start_phase > 1 {
-                                                "Phase {entry.start_phase}-{entry.target_phase}"
-                                            } else {
-                                                "Phase {entry.target_phase}"
-                                            }
-                                        }
-                                        td {
-                                            button {
-                                                class: "danger",
-                                                onclick: {
-                                                    let mut tracked_projects = tracked_projects.clone();
-                                                    move |_| {
-                                                        tracked_projects.write().remove(idx);
-                                                    }
-                                                },
-                                                "Remove"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                    div { class: "panel",
-                        h2 { "All Required Items" }
-                        table { class: "table",
-                            thead { tr { th { "Item" } th { "Required" } th { "Have" } th { "Missing" } } }
-                            tbody {
-                                if required_rows_filtered.is_empty() {
-                                    tr { td { colspan: "4", class: "muted", "No requirements tracked yet." } }
-                                }
-                                for row in required_rows_filtered.iter() {
-                                    tr {
-                                        td {
-                                            div { class: "item-cell",
-                                                if !row.image_src.is_empty() {
-                                                    img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
-                                                }
-                                                span { "{row.name}" }
-                                            }
-                                        }
-                                        td { "{row.required}" }
-                                        td { "{row.have}" }
-                                        td { "{row.missing}" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    div { class: "panel subtle-panel",
-                        h2 { "Planning Workspace Hidden" }
-                        p { class: "muted", "Use 'Show Planning Workspace' to edit tracked crafts, quests, hideout upgrades, and projects." }
-                    }
+                TrackingPanels {
+                    show_planning_workspace: *show_planning_workspace.read(),
+                    data_snapshot: data_snapshot.clone(),
+                    craft_pick: craft_pick.clone(),
+                    craft_qty: craft_qty.clone(),
+                    tracked_crafts: tracked_crafts.clone(),
+                    crafts_snapshot: crafts_snapshot.clone(),
+                    quest_pick: quest_pick.clone(),
+                    tracked_quests: tracked_quests.clone(),
+                    quests_snapshot: quests_snapshot.clone(),
+                    hideout_pick: hideout_pick.clone(),
+                    hideout_level: hideout_level.clone(),
+                    tracked_hideout: tracked_hideout.clone(),
+                    hideout_snapshot: hideout_snapshot.clone(),
+                    project_pick: project_pick.clone(),
+                    project_phase: project_phase.clone(),
+                    tracked_projects: tracked_projects.clone(),
+                    projects_snapshot: projects_snapshot.clone(),
+                    required_rows_filtered: required_rows_filtered.clone(),
                 }
             } else {
                 div { class: "panel",
@@ -1766,10 +1496,11 @@ fn App() -> Element {
                     p { "Load game data first, then add tracking targets and scan your inventory." }
                 }
             }
+
+            ToastViewport { toasts: toasts_snapshot.clone() }
         }
     }
 }
-
 async fn fetch_static_data(client: &Client) -> Result<ArcData> {
     if let Some(repo_dir) = resolve_local_data_dir() {
         info!(path = %repo_dir.display(), "fetch_static_data: attempting local data source");
@@ -2125,11 +1856,15 @@ async fn get_user_json_value(
     }
 }
 
-async fn run_api_diagnostics(
+async fn run_api_diagnostics<F>(
     client: &Client,
     app_key: &str,
     user_key: &str,
-) -> Result<Vec<ApiDiagnosticRow>> {
+    mut on_step: F,
+) -> Result<Vec<ApiDiagnosticRow>>
+where
+    F: FnMut(usize, usize, &str),
+{
     let app_key = app_key.trim();
     let user_key = user_key.trim();
 
@@ -2156,10 +1891,11 @@ async fn run_api_diagnostics(
     ];
 
     let mut rows = Vec::with_capacity(endpoints.len());
-    for endpoint in endpoints {
+    let total = endpoints.len();
+    for (index, endpoint) in endpoints.iter().enumerate() {
         match get_user_json_value(client, app_key, user_key, endpoint, None).await {
             Ok(payload) => rows.push(ApiDiagnosticRow {
-                endpoint: endpoint.to_string(),
+                endpoint: (*endpoint).to_string(),
                 status_code: "200".to_string(),
                 request_id: extract_request_id_from_payload(&payload),
                 detail: "OK".to_string(),
@@ -2170,7 +1906,7 @@ async fn run_api_diagnostics(
                     .map(|status| status.to_string())
                     .unwrap_or_else(|| "error".to_string());
                 rows.push(ApiDiagnosticRow {
-                    endpoint: endpoint.to_string(),
+                    endpoint: (*endpoint).to_string(),
                     status_code,
                     request_id: extract_request_id_from_error(&err),
                     detail: truncate_for_report(&err.to_string(), 220),
@@ -2178,6 +1914,7 @@ async fn run_api_diagnostics(
                 });
             }
         }
+        on_step(index + 1, total, endpoint);
     }
 
     Ok(rows)
@@ -3502,6 +3239,24 @@ fn now_unix_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+fn now_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn enqueue_toast(mut toasts: Signal<Vec<Toast>>, kind: ToastKind, message: String) {
+    let id = now_unix_millis();
+    toasts.write().push(Toast { id, kind, message });
+
+    spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        toasts.write().retain(|toast| toast.id != id);
+    });
+}
+
 fn cache_root_dir() -> PathBuf {
     if let Some(custom) = first_non_empty_env(&["ARC_CACHE_DIR"]) {
         return PathBuf::from(custom);
@@ -4131,6 +3886,141 @@ select:focus-visible {
   padding: var(--space-2);
   max-height: 260px;
   overflow: auto;
+}
+
+.progress-panel {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  background: var(--color-surface-strong);
+}
+
+.progress-top {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.progress-detail {
+  margin: 4px 0 8px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-border) 72%, transparent);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--color-primary), color-mix(in srgb, var(--color-primary) 56%, white));
+  transition: width 180ms ease;
+}
+
+.progress-indeterminate {
+  animation: indeterminate-slide 1200ms linear infinite;
+}
+
+@keyframes indeterminate-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(260%); }
+}
+
+.summary-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.chart-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  background: var(--color-surface-strong);
+}
+
+.chart-row {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 6px;
+}
+
+.chart-row strong {
+  min-width: 40px;
+  text-align: right;
+}
+
+.chart-bar-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-border) 72%, transparent);
+  overflow: hidden;
+}
+
+.chart-bar {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.chart-need {
+  background: #f2b84c;
+}
+
+.chart-keep {
+  background: #66c48c;
+}
+
+.chart-sell {
+  background: #6ea9ff;
+}
+
+.toast-viewport {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: min(360px, calc(100vw - 24px));
+  z-index: 20;
+}
+
+.toast {
+  border: 1px solid var(--color-border);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-2);
+}
+
+.toast p {
+  margin: 0;
+}
+
+.toast-info {
+  border-left-color: var(--color-primary);
+}
+
+.toast-success {
+  border-left-color: var(--color-success);
+}
+
+.toast-warning {
+  border-left-color: #f2b84c;
+}
+
+.toast-error {
+  border-left-color: var(--color-danger);
 }
 
 @media (max-width: 900px) {

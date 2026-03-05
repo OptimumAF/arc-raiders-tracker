@@ -172,6 +172,18 @@ The app now persists tracked goals and caches selected network data on disk to r
 - Reduced motion support through `prefers-reduced-motion`
 - Dashboard filter input shared across `Can Sell`, `Need To Find`, `Keep In Stash`, and `All Required Items`
 - Dashboard-first workflow with a toggle to hide/show planning panels
+- Dashboard chart widgets for `Need / Keep / Sell` summaries (item types + quantities)
+- In-app progress panel for long-running operations (load, scan, sync, diagnostics)
+- Toast notifications for start/success/warning/error feedback
+
+## UI architecture
+
+The UI is now split into component files:
+
+- `src/ui/api_panel.rs`
+- `src/ui/dashboard.rs`
+- `src/ui/tracking_panels.rs`
+- `src/ui/widgets.rs`
 
 ## Notes
 
