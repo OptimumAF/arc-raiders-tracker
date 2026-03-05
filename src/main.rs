@@ -37,6 +37,7 @@ const DEFAULT_SELL_EXCLUDE_TYPES: &[&str] = &[
     "Ammunition",
     "Quick Use",
     "Shield",
+    "Key",
 ];
 const CACHE_NAMESPACE_STATIC: &str = "static_api";
 const CACHE_NAMESPACE_USER: &str = "user_api";
