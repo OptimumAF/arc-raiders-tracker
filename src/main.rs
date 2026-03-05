@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use dioxus::desktop::{Config as DesktopConfig, WindowBuilder, tao::window::Icon};
 use dioxus::prelude::*;
 use reqwest::{Client, StatusCode, header::HeaderMap};
 use serde::de::DeserializeOwned;
@@ -36,7 +37,91 @@ static API_RETRY_CONFIG: OnceLock<ApiRetryConfig> = OnceLock::new();
 fn main() {
     dotenvy::dotenv().ok();
     init_logging();
-    dioxus::launch(App);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(
+            DesktopConfig::new()
+                .with_window(WindowBuilder::new().with_window_icon(create_app_icon())),
+        )
+        .launch(App);
+}
+
+fn create_app_icon() -> Option<Icon> {
+    let size = 64usize;
+    let mut rgba = vec![0u8; size * size * 4];
+
+    for y in 0..size {
+        for x in 0..size {
+            let i = (y * size + x) * 4;
+            let t = y as f32 / (size - 1) as f32;
+
+            // Deep slate -> steel blue gradient background.
+            let r = (18.0 + (55.0 - 18.0) * t) as u8;
+            let g = (29.0 + (89.0 - 29.0) * t) as u8;
+            let b = (42.0 + (128.0 - 42.0) * t) as u8;
+
+            rgba[i] = r;
+            rgba[i + 1] = g;
+            rgba[i + 2] = b;
+            rgba[i + 3] = 255;
+        }
+    }
+
+    // Rounded corner alpha mask.
+    let radius = 12i32;
+    for y in 0..size {
+        for x in 0..size {
+            let i = (y * size + x) * 4 + 3;
+            let x = x as i32;
+            let y = y as i32;
+            let w = size as i32 - 1;
+            let h = size as i32 - 1;
+            let near_left = x < radius;
+            let near_right = x > w - radius;
+            let near_top = y < radius;
+            let near_bottom = y > h - radius;
+
+            let outside = (near_left
+                && near_top
+                && (x - radius).pow(2) + (y - radius).pow(2) > radius.pow(2))
+                || (near_right
+                    && near_top
+                    && (x - (w - radius)).pow(2) + (y - radius).pow(2) > radius.pow(2))
+                || (near_left
+                    && near_bottom
+                    && (x - radius).pow(2) + (y - (h - radius)).pow(2) > radius.pow(2))
+                || (near_right
+                    && near_bottom
+                    && (x - (w - radius)).pow(2) + (y - (h - radius)).pow(2) > radius.pow(2));
+            if outside {
+                rgba[i] = 0;
+            }
+        }
+    }
+
+    // Stylized "A" glyph in light blue.
+    for y in 10..54 {
+        for x in 8..56 {
+            let xf = x as f32;
+            let yf = y as f32;
+            let left_leg = (yf > 12.0)
+                && ((xf - 17.0) < (yf - 12.0) * 0.55)
+                && ((xf - 12.0) > (yf - 12.0) * 0.35);
+            let right_leg = (yf > 12.0)
+                && ((46.0 - xf) < (yf - 12.0) * 0.55)
+                && ((51.0 - xf) > (yf - 12.0) * 0.35);
+            let bar = (yf > 31.0 && yf < 36.0) && (xf > 22.0 && xf < 42.0);
+
+            if left_leg || right_leg || bar {
+                let i = (y * size + x) * 4;
+                rgba[i] = 182;
+                rgba[i + 1] = 222;
+                rgba[i + 2] = 255;
+                rgba[i + 3] = 255;
+            }
+        }
+    }
+
+    Icon::from_rgba(rgba, size as u32, size as u32).ok()
 }
 
 fn init_logging() {
