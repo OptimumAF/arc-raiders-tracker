@@ -141,6 +141,29 @@ ARC_API_RETRY_MAX_MS=10000
 - This prevents false "safe to sell" suggestions when ArcTracker progress APIs return errors.
 - If you manually add tracking goals in the app, sell recommendations are enabled from those manual requirements.
 
+## Caching and persistence
+
+The app now persists tracked goals and caches selected network data on disk to reduce relaunch traffic.
+
+- Tracked goals persisted:
+  - Crafts
+  - Quests
+  - Hideout targets
+  - Project targets
+- Cache location:
+  - Default: `cache/`
+  - Override with `.env`: `ARC_CACHE_DIR=...`
+- Static API dataset cache (`/api/items`, `/api/quests`, `/api/hideout`, `/api/projects`):
+  - Default TTL: `86400` seconds
+  - Override: `ARC_STATIC_CACHE_TTL_SECONDS=86400`
+- Startup user-data cache for relaunches (stash/profile/loadout/quests/hideout/projects during startup auto-sync):
+  - Default TTL: `300` seconds
+  - Override: `ARC_STARTUP_USER_CACHE_TTL_SECONDS=300`
+- CDN item image cache:
+  - Prefetches a small number of uncached item images and stores them as data URIs
+  - Default prefetch count: `12`
+  - Override: `ARC_IMAGE_PREFETCH_COUNT=12`
+
 ## Notes
 
 - Public data endpoints used:

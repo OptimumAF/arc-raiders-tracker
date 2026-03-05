@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -10,8 +11,8 @@ use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use dioxus::prelude::*;
 use reqwest::{Client, StatusCode, header::HeaderMap};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -22,6 +23,13 @@ const DEFAULT_API_MIN_INTERVAL_MS: u64 = 1000;
 const DEFAULT_API_MAX_RETRIES: usize = 2;
 const DEFAULT_API_RETRY_BASE_MS: u64 = 1500;
 const DEFAULT_API_RETRY_MAX_MS: u64 = 10000;
+const DEFAULT_STATIC_CACHE_TTL_SECONDS: u64 = 60 * 60 * 24;
+const DEFAULT_STARTUP_USER_CACHE_TTL_SECONDS: u64 = 60 * 5;
+const DEFAULT_IMAGE_PREFETCH_COUNT: usize = 12;
+const CACHE_NAMESPACE_STATIC: &str = "static_api";
+const CACHE_NAMESPACE_USER: &str = "user_api";
+const CACHE_NAMESPACE_IMAGES: &str = "images";
+const CACHE_FILE_TRACKED_STATE: &str = "tracked_state.json";
 static API_REQUEST_THROTTLE: OnceLock<ApiRequestThrottle> = OnceLock::new();
 static API_RETRY_CONFIG: OnceLock<ApiRetryConfig> = OnceLock::new();
 
@@ -248,19 +256,19 @@ struct ProjectsResponse {
     projects: HashMap<String, Project>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TrackedCraft {
     item_id: String,
     quantity: u32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TrackedHideout {
     module_id: String,
     target_level: u32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TrackedProject {
     project_id: String,
     target_phase: u32,
@@ -320,8 +328,29 @@ struct ApiDiagnosticRow {
     ok: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedTrackedState {
+    tracked_crafts: Vec<TrackedCraft>,
+    tracked_quests: Vec<String>,
+    tracked_hideout: Vec<TrackedHideout>,
+    tracked_projects: Vec<TrackedProject>,
+    saved_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CacheEnvelope {
+    saved_at_unix: u64,
+    value: Value,
+}
+
 #[component]
 fn App() -> Element {
+    let persisted_state = load_tracked_state().unwrap_or_default();
+    let initial_tracked_crafts = persisted_state.tracked_crafts.clone();
+    let initial_tracked_quests = persisted_state.tracked_quests.clone();
+    let initial_tracked_hideout = persisted_state.tracked_hideout.clone();
+    let initial_tracked_projects = persisted_state.tracked_projects.clone();
+
     let default_app_key = first_non_empty_env(&["key", "ARC_APP_KEY"]).unwrap_or_default();
     let default_user_key =
         first_non_empty_env(&["user_key", "ARC_USER_KEY", "arc_user_key"]).unwrap_or_default();
@@ -334,10 +363,10 @@ fn App() -> Element {
     let inventory_counts = use_signal(HashMap::<String, u32>::new);
     let loadout_counts = use_signal(HashMap::<String, u32>::new);
 
-    let tracked_crafts = use_signal(Vec::<TrackedCraft>::new);
-    let tracked_quests = use_signal(Vec::<String>::new);
-    let tracked_hideout = use_signal(Vec::<TrackedHideout>::new);
-    let tracked_projects = use_signal(Vec::<TrackedProject>::new);
+    let tracked_crafts = use_signal(move || initial_tracked_crafts.clone());
+    let tracked_quests = use_signal(move || initial_tracked_quests.clone());
+    let tracked_hideout = use_signal(move || initial_tracked_hideout.clone());
+    let tracked_projects = use_signal(move || initial_tracked_projects.clone());
 
     let mut craft_pick = use_signal(String::new);
     let mut craft_qty = use_signal(|| "1".to_string());
@@ -568,8 +597,15 @@ fn App() -> Element {
             spawn(async move {
                 info!("auto_sync_action: syncing profile/stash/loadout/quests/hideout/projects");
                 let client = Client::new();
-                match sync_user_progress(&client, &app_key_value, &user_key_value, &data, true)
-                    .await
+                match sync_user_progress(
+                    &client,
+                    &app_key_value,
+                    &user_key_value,
+                    &data,
+                    true,
+                    None,
+                )
+                .await
                 {
                     Ok(sync) => {
                         if let Some(stash) = sync.stash_counts {
@@ -804,7 +840,14 @@ fn App() -> Element {
 
                 status_message.set("Startup sync: scanning stash inventory...".to_string());
                 let mut startup_warnings = Vec::new();
-                match fetch_stash_inventory(&client, &app_key_value, &user_key_value).await {
+                match fetch_stash_inventory_with_cache(
+                    &client,
+                    &app_key_value,
+                    &user_key_value,
+                    Some(startup_user_cache_ttl()),
+                )
+                .await
+                {
                     Ok(counts) => inventory_counts.set(counts),
                     Err(err) => {
                         warn!(error = %err, "startup_sync: stash scan warning");
@@ -819,6 +862,7 @@ fn App() -> Element {
                     &user_key_value,
                     data_arc.as_ref(),
                     false,
+                    Some(startup_user_cache_ttl()),
                 )
                 .await
                 {
@@ -914,6 +958,25 @@ fn App() -> Element {
                 scanning_inventory.set(false);
                 syncing_progress.set(false);
             });
+        });
+    }
+
+    {
+        let tracked_crafts = tracked_crafts.clone();
+        let tracked_quests = tracked_quests.clone();
+        let tracked_hideout = tracked_hideout.clone();
+        let tracked_projects = tracked_projects.clone();
+        use_effect(move || {
+            let snapshot = PersistedTrackedState {
+                tracked_crafts: tracked_crafts.read().clone(),
+                tracked_quests: tracked_quests.read().clone(),
+                tracked_hideout: tracked_hideout.read().clone(),
+                tracked_projects: tracked_projects.read().clone(),
+                saved_at_unix: now_unix_seconds(),
+            };
+            if let Err(err) = save_tracked_state(&snapshot) {
+                warn!(error = %err, "state_persist: failed to save tracked state");
+            }
         });
     }
 
@@ -1461,19 +1524,41 @@ async fn fetch_static_data(client: &Client) -> Result<ArcData> {
     let quests_url = format!("{API_BASE}/api/quests");
     let hideout_url = format!("{API_BASE}/api/hideout");
     let projects_url = format!("{API_BASE}/api/projects?season=1,2");
-
-    let (items_resp, quests_resp, hideout_resp, projects_resp): (
-        ItemsResponse,
-        QuestsResponse,
-        HideoutResponse,
-        ProjectsResponse,
-    ) = tokio::try_join!(
-        get_json(client.get(items_url)),
-        get_json(client.get(quests_url)),
-        get_json(client.get(hideout_url)),
-        get_json(client.get(projects_url)),
+    let static_ttl = static_cache_ttl();
+    let mut items_resp: ItemsResponse = get_json_cached(
+        client.get(items_url),
+        CACHE_NAMESPACE_STATIC,
+        "items",
+        static_ttl,
     )
-    .context("failed to fetch one or more ArcTracker datasets")?;
+    .await
+    .context("failed to load items dataset")?;
+    let quests_resp: QuestsResponse = get_json_cached(
+        client.get(quests_url),
+        CACHE_NAMESPACE_STATIC,
+        "quests",
+        static_ttl,
+    )
+    .await
+    .context("failed to load quests dataset")?;
+    let hideout_resp: HideoutResponse = get_json_cached(
+        client.get(hideout_url),
+        CACHE_NAMESPACE_STATIC,
+        "hideout",
+        static_ttl,
+    )
+    .await
+    .context("failed to load hideout dataset")?;
+    let projects_resp: ProjectsResponse = get_json_cached(
+        client.get(projects_url),
+        CACHE_NAMESPACE_STATIC,
+        "projects_1_2",
+        static_ttl,
+    )
+    .await
+    .context("failed to load projects dataset")?;
+
+    cache_remote_item_images(client, &mut items_resp.items).await;
 
     info!(
         items = items_resp.items.len(),
@@ -1632,6 +1717,15 @@ async fn fetch_stash_inventory(
     app_key: &str,
     user_key: &str,
 ) -> Result<HashMap<String, u32>> {
+    fetch_stash_inventory_with_cache(client, app_key, user_key, None).await
+}
+
+async fn fetch_stash_inventory_with_cache(
+    client: &Client,
+    app_key: &str,
+    user_key: &str,
+    cache_ttl: Option<Duration>,
+) -> Result<HashMap<String, u32>> {
     let app_key = app_key.trim();
     let user_key = user_key.trim();
 
@@ -1644,6 +1738,20 @@ async fn fetch_stash_inventory(
         return Err(anyhow!(
             "Missing user key. Set user_key (or ARC_USER_KEY) in .env, or paste your arc_u1_ key in the app."
         ));
+    }
+
+    let cache_key = format!("stash_counts_{}", short_hash(user_key));
+    if let Some(ttl) = cache_ttl {
+        if let Some(cached) =
+            read_cache_typed::<HashMap<String, u32>>(CACHE_NAMESPACE_USER, &cache_key, Some(ttl))
+        {
+            info!(
+                unique_items = cached.len(),
+                total_items = cached.values().sum::<u32>(),
+                "fetch_stash_inventory: cache hit"
+            );
+            return Ok(cached);
+        }
     }
 
     info!("fetch_stash_inventory: start");
@@ -1691,6 +1799,9 @@ async fn fetch_stash_inventory(
         total_items = total,
         "fetch_stash_inventory: complete"
     );
+    if cache_ttl.is_some() {
+        write_cache_typed(CACHE_NAMESPACE_USER, &cache_key, &all_counts);
+    }
     Ok(all_counts)
 }
 
@@ -1699,16 +1810,50 @@ async fn get_user_json_value(
     app_key: &str,
     user_key: &str,
     path_with_query: &str,
+    cache_ttl: Option<Duration>,
 ) -> Result<Value> {
     debug!(path = path_with_query, "get_user_json_value: request");
+    let cache_key = format!("{}_{}", short_hash(user_key), short_hash(path_with_query));
+    if let Some(ttl) = cache_ttl {
+        if let Some(cached) = read_cache_typed::<Value>(CACHE_NAMESPACE_USER, &cache_key, Some(ttl))
+        {
+            debug!(path = path_with_query, "get_user_json_value: cache hit");
+            return Ok(cached);
+        }
+    }
+
     let url = format!("{API_BASE}{path_with_query}");
-    get_json(
+    let fetched: Result<Value> = get_json(
         client
             .get(url)
             .header("X-App-Key", app_key)
             .header("Authorization", format!("Bearer {user_key}")),
     )
-    .await
+    .await;
+
+    match fetched {
+        Ok(value) => {
+            if cache_ttl.is_some() {
+                write_cache_typed(CACHE_NAMESPACE_USER, &cache_key, &value);
+            }
+            Ok(value)
+        }
+        Err(err) => {
+            if cache_ttl.is_some() {
+                if let Some(stale) =
+                    read_cache_typed::<Value>(CACHE_NAMESPACE_USER, &cache_key, None)
+                {
+                    warn!(
+                        path = path_with_query,
+                        error = %err,
+                        "get_user_json_value: using stale cache after fetch failure"
+                    );
+                    return Ok(stale);
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 async fn run_api_diagnostics(
@@ -1743,7 +1888,7 @@ async fn run_api_diagnostics(
 
     let mut rows = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
-        match get_user_json_value(client, app_key, user_key, endpoint).await {
+        match get_user_json_value(client, app_key, user_key, endpoint, None).await {
             Ok(payload) => rows.push(ApiDiagnosticRow {
                 endpoint: endpoint.to_string(),
                 status_code: "200".to_string(),
@@ -1792,6 +1937,7 @@ async fn sync_user_progress(
     user_key: &str,
     data: &ArcData,
     include_stash: bool,
+    user_cache_ttl: Option<Duration>,
 ) -> Result<UserSyncResult> {
     let app_key = app_key.trim();
     let user_key = user_key.trim();
@@ -1814,7 +1960,7 @@ async fn sync_user_progress(
     let project_ids: HashSet<String> = data.projects.iter().map(|p| p.id.clone()).collect();
 
     if include_stash {
-        match fetch_stash_inventory(client, app_key, user_key).await {
+        match fetch_stash_inventory_with_cache(client, app_key, user_key, user_cache_ttl).await {
             Ok(stash) => {
                 info!(
                     unique_items = stash.len(),
@@ -1827,7 +1973,15 @@ async fn sync_user_progress(
         }
     }
 
-    match get_user_json_value(client, app_key, user_key, "/api/v2/user/profile?locale=en").await {
+    match get_user_json_value(
+        client,
+        app_key,
+        user_key,
+        "/api/v2/user/profile?locale=en",
+        user_cache_ttl,
+    )
+    .await
+    {
         Ok(profile_value) => {
             result.profile = parse_user_profile(unwrap_data_ref(&profile_value));
             debug!(
@@ -1838,7 +1992,15 @@ async fn sync_user_progress(
         Err(err) => result.warnings.push(format!("profile: {err}")),
     }
 
-    match get_user_json_value(client, app_key, user_key, "/api/v2/user/loadout?locale=en").await {
+    match get_user_json_value(
+        client,
+        app_key,
+        user_key,
+        "/api/v2/user/loadout?locale=en",
+        user_cache_ttl,
+    )
+    .await
+    {
         Ok(loadout_value) => {
             let loadout_data = unwrap_data_ref(&loadout_value);
             let counts = extract_inventory_counts(loadout_data);
@@ -1860,6 +2022,7 @@ async fn sync_user_progress(
         app_key,
         user_key,
         "/api/v2/user/quests?locale=en&filter=incomplete",
+        user_cache_ttl,
     )
     .await
     {
@@ -1889,6 +2052,7 @@ async fn sync_user_progress(
             app_key,
             user_key,
             "/api/v2/user/quests?locale=en&filter=completed",
+            user_cache_ttl,
         )
         .await
         {
@@ -1924,7 +2088,15 @@ async fn sync_user_progress(
         result.tracked_quests = Some(tracked_quests);
     }
 
-    match get_user_json_value(client, app_key, user_key, "/api/v2/user/hideout?locale=en").await {
+    match get_user_json_value(
+        client,
+        app_key,
+        user_key,
+        "/api/v2/user/hideout?locale=en",
+        user_cache_ttl,
+    )
+    .await
+    {
         Ok(hideout_value) => {
             result.hideout_synced = true;
             let progress = extract_progress_level_map(
@@ -1968,7 +2140,7 @@ async fn sync_user_progress(
     let mut projects_server_errors = 0usize;
     for season in [1u32, 2u32] {
         let path = format!("/api/v2/user/projects?locale=en&season={season}");
-        match get_user_json_value(client, app_key, user_key, &path).await {
+        match get_user_json_value(client, app_key, user_key, &path, user_cache_ttl).await {
             Ok(project_value) => {
                 projects_synced = true;
                 result.projects_synced = true;
@@ -1999,8 +2171,14 @@ async fn sync_user_progress(
     }
 
     if project_progress.is_empty() && projects_server_errors < 2 {
-        match get_user_json_value(client, app_key, user_key, "/api/v2/user/projects?locale=en")
-            .await
+        match get_user_json_value(
+            client,
+            app_key,
+            user_key,
+            "/api/v2/user/projects?locale=en",
+            user_cache_ttl,
+        )
+        .await
         {
             Ok(project_value) => {
                 projects_synced = true;
@@ -2021,8 +2199,16 @@ async fn sync_user_progress(
         );
     }
 
-    if !projects_synced && !project_errors.is_empty() {
-        result.warnings.push(project_errors.join(" | "));
+    if !project_progress.is_empty() {
+        write_cache_typed(
+            CACHE_NAMESPACE_USER,
+            &format!(
+                "{}_{}",
+                short_hash(user_key),
+                short_hash("projects_progress")
+            ),
+            &project_progress,
+        );
     }
 
     if projects_synced {
@@ -2049,6 +2235,18 @@ async fn sync_user_progress(
             "sync_user_progress: project targets derived"
         );
         result.tracked_projects = Some(targets);
+    }
+
+    if result.warnings.is_empty() {
+        info!("sync_user_progress: complete without warnings");
+    } else {
+        warn!(
+            warnings = result.warnings.len(),
+            "sync_user_progress: complete with warnings"
+        );
+    }
+    if !projects_synced && !project_errors.is_empty() {
+        result.warnings.push(project_errors.join(" | "));
     }
 
     if result.warnings.is_empty() {
@@ -2961,6 +3159,264 @@ fn mask_key(key: &str) -> String {
     let prefix = &key[..6];
     let suffix = &key[key.len().saturating_sub(4)..];
     format!("{prefix}***{suffix}")
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn cache_root_dir() -> PathBuf {
+    if let Some(custom) = first_non_empty_env(&["ARC_CACHE_DIR"]) {
+        return PathBuf::from(custom);
+    }
+    PathBuf::from("cache")
+}
+
+fn cache_file_path(namespace: &str, key: &str) -> PathBuf {
+    cache_root_dir()
+        .join(namespace)
+        .join(format!("{}.json", short_hash(key)))
+}
+
+fn short_hash(value: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn read_cache_typed<T>(namespace: &str, key: &str, max_age: Option<Duration>) -> Option<T>
+where
+    T: DeserializeOwned,
+{
+    let path = cache_file_path(namespace, key);
+    let content = fs::read_to_string(path).ok()?;
+    let envelope: CacheEnvelope = serde_json::from_str(&content).ok()?;
+
+    if let Some(max_age) = max_age {
+        let now = now_unix_seconds();
+        if now.saturating_sub(envelope.saved_at_unix) > max_age.as_secs() {
+            return None;
+        }
+    }
+
+    serde_json::from_value(envelope.value).ok()
+}
+
+fn write_cache_typed<T>(namespace: &str, key: &str, value: &T)
+where
+    T: Serialize,
+{
+    let value = match serde_json::to_value(value) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(error = %err, namespace, "cache_write: failed to serialize value");
+            return;
+        }
+    };
+    let envelope = CacheEnvelope {
+        saved_at_unix: now_unix_seconds(),
+        value,
+    };
+    let output = match serde_json::to_string(&envelope) {
+        Ok(output) => output,
+        Err(err) => {
+            warn!(error = %err, namespace, "cache_write: failed to encode envelope");
+            return;
+        }
+    };
+
+    let path = cache_file_path(namespace, key);
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            warn!(error = %err, "cache_write: failed to create parent directory");
+            return;
+        }
+    }
+    if let Err(err) = fs::write(path, output) {
+        warn!(error = %err, "cache_write: failed to write cache file");
+    }
+}
+
+fn tracked_state_path() -> PathBuf {
+    cache_root_dir().join(CACHE_FILE_TRACKED_STATE)
+}
+
+fn load_tracked_state() -> Option<PersistedTrackedState> {
+    let path = tracked_state_path();
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn save_tracked_state(state: &PersistedTrackedState) -> Result<()> {
+    let path = tracked_state_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create '{}'", parent.display()))?;
+    }
+    let content = serde_json::to_string(state).context("failed to encode tracked state")?;
+    fs::write(&path, content).with_context(|| format!("failed to write '{}'", path.display()))
+}
+
+fn static_cache_ttl() -> Duration {
+    Duration::from_secs(
+        first_non_empty_env(&["ARC_STATIC_CACHE_TTL_SECONDS"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_STATIC_CACHE_TTL_SECONDS),
+    )
+}
+
+fn startup_user_cache_ttl() -> Duration {
+    Duration::from_secs(
+        first_non_empty_env(&["ARC_STARTUP_USER_CACHE_TTL_SECONDS"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_STARTUP_USER_CACHE_TTL_SECONDS),
+    )
+}
+
+fn image_prefetch_count() -> usize {
+    first_non_empty_env(&["ARC_IMAGE_PREFETCH_COUNT"])
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_IMAGE_PREFETCH_COUNT)
+}
+
+async fn get_json_cached<T>(
+    request: reqwest::RequestBuilder,
+    namespace: &str,
+    cache_key: &str,
+    ttl: Duration,
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    if let Some(cached_value) = read_cache_typed::<Value>(namespace, cache_key, Some(ttl)) {
+        debug!(namespace, cache_key, "get_json_cached: cache hit");
+        return serde_json::from_value(cached_value)
+            .context("failed to decode cached JSON payload");
+    }
+
+    let fetched_value: Value = get_json(request).await?;
+    write_cache_typed(namespace, cache_key, &fetched_value);
+    serde_json::from_value(fetched_value).context("failed to decode fetched JSON payload")
+}
+
+fn normalize_remote_image_url(source: &str) -> Option<String> {
+    let source = source.trim();
+    if source.is_empty() || source.starts_with("data:") {
+        return None;
+    }
+
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return Some(source.to_string());
+    }
+    if source.starts_with('/') {
+        return Some(format!("{API_BASE}{source}"));
+    }
+    if source.starts_with("images/") {
+        return Some(format!("{API_BASE}/{source}"));
+    }
+    None
+}
+
+fn image_cache_file_path(url: &str) -> PathBuf {
+    cache_root_dir()
+        .join(CACHE_NAMESPACE_IMAGES)
+        .join(format!("{}.bin", short_hash(url)))
+}
+
+fn image_mime_type(url: &str) -> &'static str {
+    let lower = url.to_ascii_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/png"
+    }
+}
+
+fn read_cached_remote_image_data_uri(url: &str) -> Option<String> {
+    let path = image_cache_file_path(url);
+    let bytes = fs::read(path).ok()?;
+    let mime = image_mime_type(url);
+    Some(format!("data:{mime};base64,{}", BASE64.encode(bytes)))
+}
+
+fn write_cached_remote_image(url: &str, bytes: &[u8]) {
+    let path = image_cache_file_path(url);
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            warn!(error = %err, "image_cache: failed to create cache directory");
+            return;
+        }
+    }
+    if let Err(err) = fs::write(path, bytes) {
+        warn!(error = %err, "image_cache: failed to write image");
+    }
+}
+
+async fn fetch_and_cache_remote_image(client: &Client, url: &str) -> Result<String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed downloading image '{url}'"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(anyhow!("image fetch failed with HTTP {status}"));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed reading image bytes '{url}'"))?;
+    write_cached_remote_image(url, &bytes);
+    let mime = image_mime_type(url);
+    Ok(format!("data:{mime};base64,{}", BASE64.encode(&bytes)))
+}
+
+async fn cache_remote_item_images(client: &Client, items: &mut [Item]) {
+    let mut cache_hits = 0usize;
+    let mut fetched = 0usize;
+    let prefetch_limit = image_prefetch_count();
+
+    for item in items.iter_mut() {
+        let Some(source) = item.image_filename.clone() else {
+            continue;
+        };
+        let Some(url) = normalize_remote_image_url(&source) else {
+            continue;
+        };
+
+        if let Some(data_uri) = read_cached_remote_image_data_uri(&url) {
+            item.image_filename = Some(data_uri);
+            cache_hits = cache_hits.saturating_add(1);
+            continue;
+        }
+
+        if fetched >= prefetch_limit {
+            continue;
+        }
+
+        match fetch_and_cache_remote_image(client, &url).await {
+            Ok(data_uri) => {
+                item.image_filename = Some(data_uri);
+                fetched = fetched.saturating_add(1);
+            }
+            Err(err) => {
+                debug!(url, error = %err, "image_cache: prefetch failed");
+            }
+        }
+    }
+
+    if cache_hits > 0 || fetched > 0 {
+        info!(
+            cache_hits,
+            fetched, prefetch_limit, "image_cache: refreshed item image sources"
+        );
+    }
 }
 
 fn first_non_empty_env(keys: &[&str]) -> Option<String> {

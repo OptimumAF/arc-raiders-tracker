@@ -2,3 +2,4 @@
 /Cargo.lock
 /vendor/arcraiders-data
 .env
+/cache
