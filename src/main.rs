@@ -356,6 +356,8 @@ struct TrackedHideout {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TrackedProject {
     project_id: String,
+    #[serde(default = "default_start_phase")]
+    start_phase: u32,
     target_phase: u32,
 }
 
@@ -1510,9 +1512,10 @@ fn App() -> Element {
 
                                         let mut entries = tracked_projects.write();
                                         if let Some(existing) = entries.iter_mut().find(|entry| entry.project_id == project_id) {
+                                            existing.start_phase = 1;
                                             existing.target_phase = phase;
                                         } else {
-                                            entries.push(TrackedProject { project_id, target_phase: phase });
+                                            entries.push(TrackedProject { project_id, start_phase: 1, target_phase: phase });
                                         }
                                     }
                                 },
@@ -1530,7 +1533,13 @@ fn App() -> Element {
                                 for (idx, entry) in projects_snapshot.iter().enumerate() {
                                     tr {
                                         td { "{data_snapshot.as_ref().map(|d| project_name(d, &entry.project_id)).unwrap_or_else(|| entry.project_id.clone())}" }
-                                        td { "Phase {entry.target_phase}" }
+                                        td {
+                                            if entry.start_phase > 1 {
+                                                "Phase {entry.start_phase}-{entry.target_phase}"
+                                            } else {
+                                                "Phase {entry.target_phase}"
+                                            }
+                                        }
                                         td {
                                             button {
                                                 class: "danger",
@@ -2306,11 +2315,12 @@ async fn sync_user_progress(
                 .map(|phase| phase.phase)
                 .max()
                 .unwrap_or(0);
-            let next = current.saturating_add(1);
-            if max_phase > 0 && next <= max_phase {
+            let start = current.saturating_add(1);
+            if max_phase > 0 && start <= max_phase {
                 targets.push(TrackedProject {
                     project_id: project.id.clone(),
-                    target_phase: next,
+                    start_phase: start,
+                    target_phase: max_phase,
                 });
             }
         }
@@ -3037,11 +3047,10 @@ fn aggregate_requirements(
             .iter()
             .find(|project| project.id == project_entry.project_id)
         {
-            for phase in project
-                .phases
-                .iter()
-                .filter(|phase| phase.phase <= project_entry.target_phase)
-            {
+            for phase in project.phases.iter().filter(|phase| {
+                phase.phase >= project_entry.start_phase
+                    && phase.phase <= project_entry.target_phase
+            }) {
                 for req in &phase.requirement_item_ids {
                     add_requirement(&mut totals, &req.item_id, req.quantity);
                 }
@@ -3215,6 +3224,10 @@ fn localized_en(value: &HashMap<String, String>) -> String {
 
 fn parse_u32_or_default(raw: &str, default: u32) -> u32 {
     raw.trim().parse::<u32>().unwrap_or(default)
+}
+
+fn default_start_phase() -> u32 {
+    1
 }
 
 fn value_as_u32(value: &Value) -> Option<u32> {
