@@ -31,6 +31,7 @@ pub fn ApiPanel(
             input {
                 value: "{user_key}",
                 placeholder: "arc_u1_your_user_key",
+                "aria-label": "User API key",
                 oninput: move |evt| on_user_key_input.call(evt),
             }
             div { class: "actions",
@@ -78,7 +79,7 @@ pub fn ApiPanel(
             }
             if !diagnostics_rows.is_empty() {
                 h3 { "API Diagnostics Report" }
-                table { class: "table compact diagnostics-table",
+                table { class: "table compact diagnostics-table", "aria-label": "API diagnostics results",
                     thead {
                         tr {
                             th { "Endpoint" }
@@ -89,7 +90,7 @@ pub fn ApiPanel(
                     }
                     tbody {
                         for row in diagnostics_rows.iter() {
-                            tr {
+                            tr { key: "{row.endpoint}",
                                 td { "{row.endpoint}" }
                                 td { if row.ok { "OK (200)" } else { "{row.status_code}" } }
                                 td { "{row.request_id.clone().unwrap_or_else(|| \"-\".to_string())}" }

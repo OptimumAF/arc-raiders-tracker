@@ -3669,6 +3669,7 @@ body {
   margin-bottom: var(--space-3);
   box-shadow: var(--shadow-panel);
   backdrop-filter: blur(2px);
+  container-type: inline-size;
 }
 
 .subtle-panel {
@@ -3680,16 +3681,22 @@ h2, h3 {
 }
 
 h2 {
-  font-size: 20px;
+  font-size: clamp(18px, 1.6vw, 22px);
 }
 
 h3 {
-  font-size: 16px;
+  font-size: clamp(15px, 1.2vw, 18px);
 }
 
 .muted {
   color: var(--color-muted);
   margin-top: 0;
+}
+
+.field-label {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--color-muted);
 }
 
 .dash-num {
@@ -4040,6 +4047,21 @@ select:focus-visible {
   .row,
   .actions {
     flex-direction: column;
+  }
+}
+
+@container (max-width: 520px) {
+  .row {
+    flex-direction: column;
+  }
+
+  .chart-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .chart-row strong {
+    text-align: left;
   }
 }
 

@@ -26,7 +26,7 @@ fn SummaryCharts(
 
     rsx! {
         div { class: "summary-charts",
-            div { class: "chart-card",
+            div { class: "chart-card", role: "img", "aria-label": "Item type counts for need, keep, and sell categories",
                 h3 { "Category Item Types" }
                 div { class: "chart-row",
                     span { "Need" }
@@ -50,7 +50,7 @@ fn SummaryCharts(
                     strong { "{sell_item_types}" }
                 }
             }
-            div { class: "chart-card",
+            div { class: "chart-card", role: "img", "aria-label": "Quantity totals for missing, keep, and sell categories",
                 h3 { "Quantity Snapshot" }
                 div { class: "chart-row",
                     span { "Missing" }
@@ -103,6 +103,7 @@ pub fn DashboardPanel(
                 input {
                     value: "{dashboard_filter}",
                     placeholder: "Filter items in dashboard and requirements...",
+                    "aria-label": "Filter dashboard items",
                     oninput: move |evt| on_dashboard_filter_input.call(evt),
                 }
             }
@@ -143,7 +144,7 @@ pub fn DashboardPanel(
                             }
                         }
                     }
-                    table { class: "table compact",
+                    table { class: "table compact", "aria-label": "Items that can be sold",
                         thead { tr { th { "Item" } th { "Qty" } th { "Value" } } }
                         tbody {
                             if suppress_sell_recommendations {
@@ -152,7 +153,7 @@ pub fn DashboardPanel(
                                 tr { td { colspan: "3", class: "muted", "No excess items to suggest selling." } }
                             }
                             for row in sell_rows.iter().take(40) {
-                                tr {
+                                tr { key: "{row.name}",
                                     td {
                                         div { class: "item-cell",
                                             if !row.image_src.is_empty() {
@@ -173,14 +174,14 @@ pub fn DashboardPanel(
             div { class: "dashboard-secondary",
                 div { class: "dashboard-card",
                     h3 { "Need To Find" }
-                    table { class: "table compact",
+                    table { class: "table compact", "aria-label": "Items still needed",
                         thead { tr { th { "Item" } th { "Missing" } th { "Have/Need" } } }
                         tbody {
                             if need_rows.is_empty() {
                                 tr { td { colspan: "3", class: "muted", "No missing items based on current tracking." } }
                             }
                             for row in need_rows.iter().take(20) {
-                                tr {
+                                tr { key: "{row.name}",
                                     td {
                                         div { class: "item-cell",
                                             if !row.image_src.is_empty() {
@@ -199,14 +200,14 @@ pub fn DashboardPanel(
 
                 div { class: "dashboard-card",
                     h3 { "Keep In Stash" }
-                    table { class: "table compact",
+                    table { class: "table compact", "aria-label": "Items to keep in stash",
                         thead { tr { th { "Item" } th { "Need" } th { "Have" } } }
                         tbody {
                             if keep_rows.is_empty() {
                                 tr { td { colspan: "3", class: "muted", "No tracked requirement items yet." } }
                             }
                             for row in keep_rows.iter().take(20) {
-                                tr {
+                                tr { key: "{row.name}",
                                     td {
                                         div { class: "item-cell",
                                             if !row.image_src.is_empty() {

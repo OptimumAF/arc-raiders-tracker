@@ -43,9 +43,11 @@ pub fn TrackingPanels(
             div { class: "panel",
                 h2 { "Track Crafts" }
                 p { class: "muted", "Pick a craftable item and how many outputs you want to build." }
+                p { class: "field-label", "Craft item" }
                 div { class: "row",
                     select {
                         value: "{craft_pick.read()}",
+                        "aria-label": "Craft item selection",
                         onchange: move |evt| craft_pick.set(evt.value()),
                         option { value: "", "Select craft item..." }
                         for item in data_snapshot.as_ref().map(|d| d.craftable_items.clone()).unwrap_or_default() {
@@ -56,6 +58,7 @@ pub fn TrackingPanels(
                         value: "{craft_qty.read()}",
                         r#type: "number",
                         min: "1",
+                        "aria-label": "Craft quantity",
                         oninput: move |evt| craft_qty.set(evt.value()),
                     }
                     button {
@@ -82,7 +85,7 @@ pub fn TrackingPanels(
                 }
 
                 table {
-                    class: "table",
+                    class: "table", "aria-label": "Tracked craft goals",
                     thead {
                         tr {
                             th { "Item" }
@@ -95,7 +98,7 @@ pub fn TrackingPanels(
                             tr { td { colspan: "3", class: "muted", "No tracked crafts yet." } }
                         }
                         for (idx, craft) in crafts_snapshot.iter().enumerate() {
-                            tr {
+                            tr { key: "{craft.item_id}",
                                 td { "{data_snapshot.as_ref().map(|d| item_name(d, &craft.item_id)).unwrap_or_else(|| craft.item_id.clone())}" }
                                 td { "{craft.quantity}" }
                                 td {
@@ -119,9 +122,11 @@ pub fn TrackingPanels(
             div { class: "panel",
                 h2 { "Track Quests" }
                 p { class: "muted", "Add quests you want item requirements for." }
+                p { class: "field-label", "Quest" }
                 div { class: "row",
                     select {
                         value: "{quest_pick.read()}",
+                        "aria-label": "Quest selection",
                         onchange: move |evt| quest_pick.set(evt.value()),
                         option { value: "", "Select quest..." }
                         for quest in data_snapshot.as_ref().map(|d| d.quests.clone()).unwrap_or_default() {
@@ -148,14 +153,14 @@ pub fn TrackingPanels(
                 }
 
                 table {
-                    class: "table",
+                    class: "table", "aria-label": "Tracked quests",
                     thead { tr { th { "Quest" } th { "" } } }
                     tbody {
                         if quests_snapshot.is_empty() {
                             tr { td { colspan: "2", class: "muted", "No tracked quests." } }
                         }
                         for (idx, quest_id) in quests_snapshot.iter().enumerate() {
-                            tr {
+                            tr { key: "{quest_id}",
                                 td { "{data_snapshot.as_ref().map(|d| quest_name(d, quest_id)).unwrap_or_else(|| quest_id.clone())}" }
                                 td {
                                     button {
@@ -180,9 +185,11 @@ pub fn TrackingPanels(
             div { class: "panel",
                 h2 { "Track Hideout Upgrades" }
                 p { class: "muted", "Target level includes all requirements from level 1 up to that level." }
+                p { class: "field-label", "Hideout module" }
                 div { class: "row",
                     select {
                         value: "{hideout_pick.read()}",
+                        "aria-label": "Hideout module selection",
                         onchange: move |evt| hideout_pick.set(evt.value()),
                         option { value: "", "Select hideout module..." }
                         for module in data_snapshot.as_ref().map(|d| d.hideout_modules.clone()).unwrap_or_default() {
@@ -193,6 +200,7 @@ pub fn TrackingPanels(
                         value: "{hideout_level.read()}",
                         r#type: "number",
                         min: "1",
+                        "aria-label": "Hideout target level",
                         oninput: move |evt| hideout_level.set(evt.value()),
                     }
                     button {
@@ -227,14 +235,14 @@ pub fn TrackingPanels(
                 }
 
                 table {
-                    class: "table",
+                    class: "table", "aria-label": "Tracked hideout upgrades",
                     thead { tr { th { "Module" } th { "Target" } th { "" } } }
                     tbody {
                         if hideout_snapshot.is_empty() {
                             tr { td { colspan: "3", class: "muted", "No tracked hideout upgrades." } }
                         }
                         for (idx, entry) in hideout_snapshot.iter().enumerate() {
-                            tr {
+                            tr { key: "{entry.module_id}",
                                 td { "{data_snapshot.as_ref().map(|d| hideout_name(d, &entry.module_id)).unwrap_or_else(|| entry.module_id.clone())}" }
                                 td { "L{entry.target_level}" }
                                 td {
@@ -258,9 +266,11 @@ pub fn TrackingPanels(
             div { class: "panel",
                 h2 { "Track Projects" }
                 p { class: "muted", "Target phase includes all requirements from phase 1 up to that phase." }
+                p { class: "field-label", "Project" }
                 div { class: "row",
                     select {
                         value: "{project_pick.read()}",
+                        "aria-label": "Project selection",
                         onchange: move |evt| project_pick.set(evt.value()),
                         option { value: "", "Select project..." }
                         for project in data_snapshot.as_ref().map(|d| d.projects.clone()).unwrap_or_default() {
@@ -271,6 +281,7 @@ pub fn TrackingPanels(
                         value: "{project_phase.read()}",
                         r#type: "number",
                         min: "1",
+                        "aria-label": "Project target phase",
                         oninput: move |evt| project_phase.set(evt.value()),
                     }
                     button {
@@ -306,14 +317,14 @@ pub fn TrackingPanels(
                 }
 
                 table {
-                    class: "table",
+                    class: "table", "aria-label": "Tracked projects",
                     thead { tr { th { "Project" } th { "Target" } th { "" } } }
                     tbody {
                         if projects_snapshot.is_empty() {
                             tr { td { colspan: "3", class: "muted", "No tracked projects." } }
                         }
                         for (idx, entry) in projects_snapshot.iter().enumerate() {
-                            tr {
+                            tr { key: "{entry.project_id}",
                                 td { "{data_snapshot.as_ref().map(|d| project_name(d, &entry.project_id)).unwrap_or_else(|| entry.project_id.clone())}" }
                                 td {
                                     if entry.start_phase > 1 {
@@ -343,14 +354,14 @@ pub fn TrackingPanels(
 
         div { class: "panel",
             h2 { "All Required Items" }
-            table { class: "table",
+            table { class: "table", "aria-label": "All required items",
                 thead { tr { th { "Item" } th { "Required" } th { "Have" } th { "Missing" } } }
                 tbody {
                     if required_rows_filtered.is_empty() {
                         tr { td { colspan: "4", class: "muted", "No requirements tracked yet." } }
                     }
                     for row in required_rows_filtered.iter() {
-                        tr {
+                        tr { key: "{row.name}",
                             td {
                                 div { class: "item-cell",
                                     if !row.image_src.is_empty() {
