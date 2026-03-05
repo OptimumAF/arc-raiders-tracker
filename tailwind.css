@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+@source "./src/**/*.rs";
+
+/* Tailwind entrypoint for dx serve/build.
+   The app currently consumes assets/tailwind.css directly at runtime. */
+@import "./assets/tailwind.css";

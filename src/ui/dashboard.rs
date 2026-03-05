@@ -96,7 +96,7 @@ pub fn DashboardPanel(
     keep_rows: Vec<NeedRow>,
 ) -> Element {
     rsx! {
-        div { class: "panel dashboard-panel",
+        section { class: "panel dashboard-panel", id: "dashboard-panel", "aria-label": "Inventory dashboard",
             h2 { "Dashboard" }
             p { class: "muted", "Compares scanned inventory against all tracked requirements. Prioritizing what you can sell first." }
             div { class: "dashboard-toolbar",
@@ -153,7 +153,7 @@ pub fn DashboardPanel(
                                 tr { td { colspan: "3", class: "muted", "No excess items to suggest selling." } }
                             }
                             for row in sell_rows.iter().take(40) {
-                                tr { key: "{row.name}",
+                                tr { key: "{row.name}-{row.quantity}-{row.total_value}",
                                     td {
                                         div { class: "item-cell",
                                             if !row.image_src.is_empty() {
@@ -181,7 +181,7 @@ pub fn DashboardPanel(
                                 tr { td { colspan: "3", class: "muted", "No missing items based on current tracking." } }
                             }
                             for row in need_rows.iter().take(20) {
-                                tr { key: "{row.name}",
+                                tr { key: "{row.name}-{row.required}-{row.missing}",
                                     td {
                                         div { class: "item-cell",
                                             if !row.image_src.is_empty() {
@@ -207,7 +207,7 @@ pub fn DashboardPanel(
                                 tr { td { colspan: "3", class: "muted", "No tracked requirement items yet." } }
                             }
                             for row in keep_rows.iter().take(20) {
-                                tr { key: "{row.name}",
+                                tr { key: "{row.name}-{row.required}-{row.have}",
                                     td {
                                         div { class: "item-cell",
                                             if !row.image_src.is_empty() {

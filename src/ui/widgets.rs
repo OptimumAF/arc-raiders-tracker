@@ -38,7 +38,13 @@ pub fn ProgressPanel(progress: OperationProgress) -> Element {
     };
 
     rsx! {
-        div { class: "progress-panel",
+        div {
+            class: "progress-panel",
+            role: "progressbar",
+            "aria-label": "{progress.label}",
+            "aria-valuemin": "0",
+            "aria-valuemax": if progress.indeterminate || progress.total == 0 { "100" } else { "{progress.total}" },
+            "aria-valuenow": if progress.indeterminate { "0" } else { "{progress.current}" },
             div { class: "progress-top",
                 strong { "{progress.label}" }
                 if !progress.indeterminate && progress.total > 0 {
@@ -65,9 +71,9 @@ pub fn ToastViewport(toasts: Vec<Toast>) -> Element {
     }
 
     rsx! {
-        div { class: "toast-viewport",
+        div { class: "toast-viewport", role: "status", "aria-live": "polite", "aria-label": "Notifications",
             for toast in toasts.iter().rev().take(5) {
-                div { class: "toast {toast_kind_class(&toast.kind)}",
+                div { class: "toast {toast_kind_class(&toast.kind)}", key: "{toast.id}",
                     p { class: "dash-num", "{toast_kind_label(&toast.kind)}" }
                     p { "{toast.message}" }
                 }

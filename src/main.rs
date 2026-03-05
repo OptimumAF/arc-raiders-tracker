@@ -566,8 +566,6 @@ fn App() -> Element {
     let error_message = use_signal(String::new);
 
     let data_snapshot = static_data.read().clone();
-    let inventory_snapshot = inventory_counts.read().clone();
-    let loadout_snapshot = loadout_counts.read().clone();
     let crafts_snapshot = tracked_crafts.read().clone();
     let quests_snapshot = tracked_quests.read().clone();
     let hideout_snapshot = tracked_hideout.read().clone();
@@ -577,55 +575,102 @@ fn App() -> Element {
     let progress_snapshot = operation_progress.read().clone();
     let toasts_snapshot = toasts.read().clone();
 
-    let required_items = if let Some(data) = data_snapshot.as_ref() {
-        aggregate_requirements(
-            data,
-            &crafts_snapshot,
-            &quests_snapshot,
-            &hideout_snapshot,
-            &projects_snapshot,
-        )
-    } else {
-        HashMap::new()
+    let required_items_memo = {
+        let static_data = static_data.clone();
+        let tracked_crafts = tracked_crafts.clone();
+        let tracked_quests = tracked_quests.clone();
+        let tracked_hideout = tracked_hideout.clone();
+        let tracked_projects = tracked_projects.clone();
+        use_memo(move || {
+            if let Some(data) = static_data.read().as_ref() {
+                aggregate_requirements(
+                    data,
+                    &tracked_crafts.read(),
+                    &tracked_quests.read(),
+                    &tracked_hideout.read(),
+                    &tracked_projects.read(),
+                )
+            } else {
+                HashMap::new()
+            }
+        })
     };
-
-    let has_manual_goals = !crafts_snapshot.is_empty()
-        || !quests_snapshot.is_empty()
-        || !hideout_snapshot.is_empty()
-        || !projects_snapshot.is_empty();
+    let has_manual_goals = {
+        let tracked_crafts = tracked_crafts.clone();
+        let tracked_quests = tracked_quests.clone();
+        let tracked_hideout = tracked_hideout.clone();
+        let tracked_projects = tracked_projects.clone();
+        *use_memo(move || {
+            !tracked_crafts.read().is_empty()
+                || !tracked_quests.read().is_empty()
+                || !tracked_hideout.read().is_empty()
+                || !tracked_projects.read().is_empty()
+        })
+        .read()
+    };
     let suppress_sell_recommendations = !*requirements_data_ready.read() && !has_manual_goals;
 
-    let dashboard = if let Some(data) = data_snapshot.as_ref() {
-        build_dashboard(
-            data,
-            &required_items,
-            &inventory_snapshot,
-            &loadout_snapshot,
-            !suppress_sell_recommendations,
-        )
-    } else {
-        Dashboard::default()
+    let dashboard_memo = {
+        let static_data = static_data.clone();
+        let inventory_counts = inventory_counts.clone();
+        let loadout_counts = loadout_counts.clone();
+        let requirements_data_ready = requirements_data_ready.clone();
+        let tracked_crafts = tracked_crafts.clone();
+        let tracked_quests = tracked_quests.clone();
+        let tracked_hideout = tracked_hideout.clone();
+        let tracked_projects = tracked_projects.clone();
+        let required_items_memo = required_items_memo.clone();
+        use_memo(move || {
+            let has_manual_goals = !tracked_crafts.read().is_empty()
+                || !tracked_quests.read().is_empty()
+                || !tracked_hideout.read().is_empty()
+                || !tracked_projects.read().is_empty();
+            let suppress_sell_recommendations =
+                !*requirements_data_ready.read() && !has_manual_goals;
+            if let Some(data) = static_data.read().as_ref() {
+                build_dashboard(
+                    data,
+                    &required_items_memo.read(),
+                    &inventory_counts.read(),
+                    &loadout_counts.read(),
+                    !suppress_sell_recommendations,
+                )
+            } else {
+                Dashboard::default()
+            }
+        })
     };
+    let dashboard = dashboard_memo.read().clone();
 
-    let mut required_rows: Vec<NeedRow> = if let Some(data) = data_snapshot.as_ref() {
-        required_items
-            .iter()
-            .map(|(id, required)| {
-                let have = *inventory_snapshot.get(id).unwrap_or(&0);
-                let missing = required.saturating_sub(have);
-                NeedRow {
-                    name: item_name(data, id),
-                    image_src: item_image_src(data, id),
-                    required: *required,
-                    have,
-                    missing,
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
+    let required_rows_memo = {
+        let static_data = static_data.clone();
+        let inventory_counts = inventory_counts.clone();
+        let required_items_memo = required_items_memo.clone();
+        use_memo(move || {
+            let required_items = required_items_memo.read();
+            let mut rows: Vec<NeedRow> = if let Some(data) = static_data.read().as_ref() {
+                required_items
+                    .iter()
+                    .map(|(id, required)| {
+                        let have = *inventory_counts.read().get(id).unwrap_or(&0);
+                        let missing = required.saturating_sub(have);
+                        NeedRow {
+                            name: item_name(data, id),
+                            image_src: item_image_src(data, id),
+                            required: *required,
+                            have,
+                            missing,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            rows.sort_by(|a, b| b.missing.cmp(&a.missing).then(a.name.cmp(&b.name)));
+            rows
+        })
     };
-    required_rows.sort_by(|a, b| b.missing.cmp(&a.missing).then(a.name.cmp(&b.name)));
+    let required_rows = required_rows_memo.read().clone();
 
     let theme_value = normalize_theme_preference(theme_preference.read().as_str());
     let theme_data_attr = if theme_value == "system" {
@@ -1397,7 +1442,8 @@ fn App() -> Element {
         style { "{APP_CSS}" }
 
         div { class: "app-shell", "data-theme": "{theme_data_attr}",
-            div { class: "header",
+            a { class: "skip-link", href: "#dashboard-panel", "Skip to dashboard" }
+            header { class: "header",
                 div {
                     h1 { "ARC Cleaner Desktop" }
                     p { "Rust + Dioxus desktop tracker powered by ArcTracker.io" }
@@ -1432,68 +1478,70 @@ fn App() -> Element {
                 }
             }
 
-            ApiPanel {
-                app_key_masked: app_key_masked.clone(),
-                user_key: user_key.read().clone(),
-                on_user_key_input: move |evt: FormEvent| user_key.set(evt.value()),
-                loading_data: *loading_data.read(),
-                scanning_inventory: *scanning_inventory.read(),
-                syncing_progress: *syncing_progress.read(),
-                diagnostics_running: *diagnostics_running.read(),
-                on_load_data: load_data_action,
-                on_scan_inventory: scan_inventory_action,
-                on_auto_sync: auto_sync_action,
-                on_run_diagnostics: api_diagnostics_action,
-                profile: profile_info.read().clone(),
-                status_message: status_message.read().clone(),
-                error_message: error_message.read().clone(),
-                diagnostics_rows: diagnostics_rows_snapshot.clone(),
-                diagnostics_report: diagnostics_report_snapshot.clone(),
-                progress: progress_snapshot.clone(),
-            }
-
-            if data_loaded {
-                DashboardPanel {
-                    suppress_sell_recommendations,
-                    requirements_data_issue: requirements_data_issue.read().clone(),
-                    dashboard_filter: dashboard_filter.read().clone(),
-                    on_dashboard_filter_input: move |evt: FormEvent| dashboard_filter.set(evt.value()),
-                    sell_total_qty,
-                    sell_total_value,
-                    missing_total,
-                    need_item_types,
-                    keep_item_types,
-                    sell_item_types,
-                    keep_total_qty,
-                    sell_rows: sell_rows_filtered.clone(),
-                    need_rows: need_rows_filtered.clone(),
-                    keep_rows: keep_rows_filtered.clone(),
+            main { class: "main-content",
+                ApiPanel {
+                    app_key_masked: app_key_masked.clone(),
+                    user_key: user_key.read().clone(),
+                    on_user_key_input: move |evt: FormEvent| user_key.set(evt.value()),
+                    loading_data: *loading_data.read(),
+                    scanning_inventory: *scanning_inventory.read(),
+                    syncing_progress: *syncing_progress.read(),
+                    diagnostics_running: *diagnostics_running.read(),
+                    on_load_data: load_data_action,
+                    on_scan_inventory: scan_inventory_action,
+                    on_auto_sync: auto_sync_action,
+                    on_run_diagnostics: api_diagnostics_action,
+                    profile: profile_info.read().clone(),
+                    status_message: status_message.read().clone(),
+                    error_message: error_message.read().clone(),
+                    diagnostics_rows: diagnostics_rows_snapshot.clone(),
+                    diagnostics_report: diagnostics_report_snapshot.clone(),
+                    progress: progress_snapshot.clone(),
                 }
 
-                TrackingPanels {
-                    show_planning_workspace: *show_planning_workspace.read(),
-                    data_snapshot: data_snapshot.clone(),
-                    craft_pick: craft_pick.clone(),
-                    craft_qty: craft_qty.clone(),
-                    tracked_crafts: tracked_crafts.clone(),
-                    crafts_snapshot: crafts_snapshot.clone(),
-                    quest_pick: quest_pick.clone(),
-                    tracked_quests: tracked_quests.clone(),
-                    quests_snapshot: quests_snapshot.clone(),
-                    hideout_pick: hideout_pick.clone(),
-                    hideout_level: hideout_level.clone(),
-                    tracked_hideout: tracked_hideout.clone(),
-                    hideout_snapshot: hideout_snapshot.clone(),
-                    project_pick: project_pick.clone(),
-                    project_phase: project_phase.clone(),
-                    tracked_projects: tracked_projects.clone(),
-                    projects_snapshot: projects_snapshot.clone(),
-                    required_rows_filtered: required_rows_filtered.clone(),
-                }
-            } else {
-                div { class: "panel",
-                    h2 { "Next Step" }
-                    p { "Load game data first, then add tracking targets and scan your inventory." }
+                if data_loaded {
+                    DashboardPanel {
+                        suppress_sell_recommendations,
+                        requirements_data_issue: requirements_data_issue.read().clone(),
+                        dashboard_filter: dashboard_filter.read().clone(),
+                        on_dashboard_filter_input: move |evt: FormEvent| dashboard_filter.set(evt.value()),
+                        sell_total_qty,
+                        sell_total_value,
+                        missing_total,
+                        need_item_types,
+                        keep_item_types,
+                        sell_item_types,
+                        keep_total_qty,
+                        sell_rows: sell_rows_filtered.clone(),
+                        need_rows: need_rows_filtered.clone(),
+                        keep_rows: keep_rows_filtered.clone(),
+                    }
+
+                    TrackingPanels {
+                        show_planning_workspace: *show_planning_workspace.read(),
+                        data_snapshot: data_snapshot.clone(),
+                        craft_pick: craft_pick.clone(),
+                        craft_qty: craft_qty.clone(),
+                        tracked_crafts: tracked_crafts.clone(),
+                        crafts_snapshot: crafts_snapshot.clone(),
+                        quest_pick: quest_pick.clone(),
+                        tracked_quests: tracked_quests.clone(),
+                        quests_snapshot: quests_snapshot.clone(),
+                        hideout_pick: hideout_pick.clone(),
+                        hideout_level: hideout_level.clone(),
+                        tracked_hideout: tracked_hideout.clone(),
+                        hideout_snapshot: hideout_snapshot.clone(),
+                        project_pick: project_pick.clone(),
+                        project_phase: project_phase.clone(),
+                        tracked_projects: tracked_projects.clone(),
+                        projects_snapshot: projects_snapshot.clone(),
+                        required_rows_filtered: required_rows_filtered.clone(),
+                    }
+                } else {
+                    div { class: "panel",
+                        h2 { "Next Step" }
+                        p { "Load game data first, then add tracking targets and scan your inventory." }
+                    }
                 }
             }
 
@@ -3554,521 +3602,4 @@ fn parse_csv_lower_set(raw: &str) -> HashSet<String> {
         .collect()
 }
 
-const APP_CSS: &str = r#"
-:root {
-  --font-sans: "Inter", "Segoe UI", "Helvetica Neue", sans-serif;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --space-1: 6px;
-  --space-2: 10px;
-  --space-3: 14px;
-  --space-4: 20px;
-  --color-bg: #f3f7fc;
-  --color-surface: #ffffff;
-  --color-surface-strong: #edf2f9;
-  --color-border: #d5dfec;
-  --color-text: #132030;
-  --color-muted: #50667f;
-  --color-primary: #245fb6;
-  --color-primary-soft: #dce8fb;
-  --color-success: #0d7a3b;
-  --color-danger: #b4232f;
-  --shadow-panel: 0 8px 24px rgba(17, 34, 60, 0.08);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #12161d;
-    --color-surface: #171d26;
-    --color-surface-strong: #101620;
-    --color-border: #2d3747;
-    --color-text: #e8eef5;
-    --color-muted: #9db0c6;
-    --color-primary: #6ea9ff;
-    --color-primary-soft: #182840;
-    --color-success: #74d99f;
-    --color-danger: #ff9aa2;
-    --shadow-panel: 0 10px 28px rgba(0, 0, 0, 0.28);
-  }
-}
-
-.app-shell[data-theme="light"] {
-  --color-bg: #f3f7fc;
-  --color-surface: #ffffff;
-  --color-surface-strong: #edf2f9;
-  --color-border: #d5dfec;
-  --color-text: #132030;
-  --color-muted: #50667f;
-  --color-primary: #245fb6;
-  --color-primary-soft: #dce8fb;
-  --color-success: #0d7a3b;
-  --color-danger: #b4232f;
-  --shadow-panel: 0 8px 24px rgba(17, 34, 60, 0.08);
-}
-
-.app-shell[data-theme="dark"] {
-  --color-bg: #12161d;
-  --color-surface: #171d26;
-  --color-surface-strong: #101620;
-  --color-border: #2d3747;
-  --color-text: #e8eef5;
-  --color-muted: #9db0c6;
-  --color-primary: #6ea9ff;
-  --color-primary-soft: #182840;
-  --color-success: #74d99f;
-  --color-danger: #ff9aa2;
-  --shadow-panel: 0 10px 28px rgba(0, 0, 0, 0.28);
-}
-
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  font-family: var(--font-sans);
-  background: radial-gradient(circle at 20% -10%, var(--color-primary-soft), transparent 38%), var(--color-bg);
-  color: var(--color-text);
-  transition: background 160ms ease, color 160ms ease;
-}
-
-.app-shell {
-  max-width: 1440px;
-  margin: 0 auto;
-  padding: var(--space-4);
-}
-
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-
-.header h1 {
-  margin: 0 0 4px;
-  font-size: clamp(28px, 3vw, 34px);
-  letter-spacing: 0.02em;
-}
-
-.header p {
-  margin: 0 0 var(--space-2);
-  color: var(--color-muted);
-}
-
-.header-controls {
-  display: flex;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-}
-
-.panel {
-  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
-  box-shadow: var(--shadow-panel);
-  backdrop-filter: blur(2px);
-  container-type: inline-size;
-}
-
-.subtle-panel {
-  border-style: dashed;
-}
-
-h2, h3 {
-  margin: 0 0 var(--space-2);
-}
-
-h2 {
-  font-size: clamp(18px, 1.6vw, 22px);
-}
-
-h3 {
-  font-size: clamp(15px, 1.2vw, 18px);
-}
-
-.muted {
-  color: var(--color-muted);
-  margin-top: 0;
-}
-
-.field-label {
-  margin: 0 0 6px;
-  font-size: 13px;
-  color: var(--color-muted);
-}
-
-.dash-num {
-  margin: 0;
-  text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--color-muted);
-}
-
-.grid-two {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: var(--space-3);
-}
-
-.grid-three {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--space-3);
-}
-
-.dashboard-panel {
-  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
-}
-
-.dashboard-toolbar {
-  margin-top: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: var(--space-2);
-}
-
-.stat-chip {
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-strong);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-}
-
-.stat-chip strong {
-  font-size: 18px;
-}
-
-.dashboard-priority {
-  margin-top: var(--space-2);
-}
-
-.dashboard-secondary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--space-3);
-  margin-top: var(--space-3);
-}
-
-.dashboard-card {
-  background: var(--color-surface-strong);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-}
-
-.can-sell-card {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-primary-soft) 62%, var(--color-surface-strong)) 0%,
-    var(--color-surface-strong) 100%
-  );
-  border-color: color-mix(in srgb, var(--color-primary) 46%, var(--color-border));
-}
-
-.can-sell-card h3 {
-  color: var(--color-primary);
-}
-
-.row {
-  display: flex;
-  gap: var(--space-1);
-  margin-bottom: var(--space-2);
-}
-
-.actions {
-  display: flex;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-  flex-wrap: wrap;
-}
-
-input,
-select,
-button {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
-  border-radius: var(--radius-sm);
-  padding: 9px 10px;
-  font: inherit;
-}
-
-input,
-select {
-  flex: 1;
-  min-width: 180px;
-}
-
-button {
-  cursor: pointer;
-  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface));
-  border-color: color-mix(in srgb, var(--color-primary) 36%, var(--color-border));
-  transition: transform 160ms ease, filter 160ms ease, background 160ms ease;
-}
-
-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  filter: brightness(1.02);
-}
-
-button:disabled {
-  opacity: 0.58;
-  cursor: default;
-}
-
-button.ghost {
-  background: var(--color-surface);
-}
-
-button.danger {
-  border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-border));
-  color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 11%, var(--color-surface));
-}
-
-button:focus-visible,
-input:focus-visible,
-select:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 62%, transparent);
-  outline-offset: 1px;
-}
-
-.status {
-  color: var(--color-success);
-}
-
-.error {
-  color: var(--color-danger);
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.table th,
-.table td {
-  text-align: left;
-  border-bottom: 1px solid var(--color-border);
-  padding: 8px 6px;
-  vertical-align: top;
-}
-
-.table.compact th,
-.table.compact td {
-  padding: 6px 4px;
-  font-size: 13px;
-}
-
-.item-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.item-icon {
-  width: 20px;
-  height: 20px;
-  object-fit: contain;
-  border-radius: 3px;
-}
-
-.diagnostics-table td {
-  word-break: break-word;
-}
-
-.diagnostics-report {
-  margin: 8px 0 0;
-  white-space: pre-wrap;
-  background: var(--color-surface-strong);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-  max-height: 260px;
-  overflow: auto;
-}
-
-.progress-panel {
-  margin-top: var(--space-2);
-  margin-bottom: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-  background: var(--color-surface-strong);
-}
-
-.progress-top {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.progress-detail {
-  margin: 4px 0 8px;
-}
-
-.progress-track {
-  width: 100%;
-  height: 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-border) 72%, transparent);
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--color-primary), color-mix(in srgb, var(--color-primary) 56%, white));
-  transition: width 180ms ease;
-}
-
-.progress-indeterminate {
-  animation: indeterminate-slide 1200ms linear infinite;
-}
-
-@keyframes indeterminate-slide {
-  0% { transform: translateX(-120%); }
-  100% { transform: translateX(260%); }
-}
-
-.summary-charts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.chart-card {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-  background: var(--color-surface-strong);
-}
-
-.chart-row {
-  display: grid;
-  grid-template-columns: 72px 1fr auto;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: 6px;
-}
-
-.chart-row strong {
-  min-width: 40px;
-  text-align: right;
-}
-
-.chart-bar-track {
-  width: 100%;
-  height: 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-border) 72%, transparent);
-  overflow: hidden;
-}
-
-.chart-bar {
-  height: 100%;
-  border-radius: inherit;
-}
-
-.chart-need {
-  background: #f2b84c;
-}
-
-.chart-keep {
-  background: #66c48c;
-}
-
-.chart-sell {
-  background: #6ea9ff;
-}
-
-.toast-viewport {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  width: min(360px, calc(100vw - 24px));
-  z-index: 20;
-}
-
-.toast {
-  border: 1px solid var(--color-border);
-  border-left-width: 4px;
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-panel);
-  padding: var(--space-2);
-}
-
-.toast p {
-  margin: 0;
-}
-
-.toast-info {
-  border-left-color: var(--color-primary);
-}
-
-.toast-success {
-  border-left-color: var(--color-success);
-}
-
-.toast-warning {
-  border-left-color: #f2b84c;
-}
-
-.toast-error {
-  border-left-color: var(--color-danger);
-}
-
-@media (max-width: 900px) {
-  .app-shell {
-    padding: 12px;
-  }
-
-  .header {
-    flex-direction: column;
-  }
-
-  .grid-two,
-  .dashboard-secondary {
-    grid-template-columns: 1fr;
-  }
-
-  .row,
-  .actions {
-    flex-direction: column;
-  }
-}
-
-@container (max-width: 520px) {
-  .row {
-    flex-direction: column;
-  }
-
-  .chart-row {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-
-  .chart-row strong {
-    text-align: left;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation: none !important;
-    transition: none !important;
-  }
-}
-"#;
+const APP_CSS: &str = include_str!("../assets/tailwind.css");

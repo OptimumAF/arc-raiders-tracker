@@ -361,7 +361,7 @@ pub fn TrackingPanels(
                         tr { td { colspan: "4", class: "muted", "No requirements tracked yet." } }
                     }
                     for row in required_rows_filtered.iter() {
-                        tr { key: "{row.name}",
+                        tr { key: "{row.name}-{row.required}-{row.missing}",
                             td {
                                 div { class: "item-cell",
                                     if !row.image_src.is_empty() {

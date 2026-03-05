@@ -175,6 +175,7 @@ The app now persists tracked goals and caches selected network data on disk to r
 - Dashboard chart widgets for `Need / Keep / Sell` summaries (item types + quantities)
 - In-app progress panel for long-running operations (load, scan, sync, diagnostics)
 - Toast notifications for start/success/warning/error feedback
+- Derived dashboard data now uses memoized calculations (`use_memo`) for requirements and dashboard composition
 - Accessibility pass:
   - ARIA labels on key inputs/tables/charts
   - persistent field labels in tracking forms
@@ -189,6 +190,39 @@ The UI is now split into component files:
 - `src/ui/dashboard.rs`
 - `src/ui/tracking_panels.rs`
 - `src/ui/widgets.rs`
+
+## Tailwind-ready styling
+
+- Runtime stylesheet now lives in `assets/tailwind.css` (loaded from Rust via `include_str!`)
+- A Tailwind entry file is included at project root: `tailwind.css`
+- For Dioxus CLI workflows (`dx serve` / `dx build`), `tailwind.css` is configured with:
+  - `@import "tailwindcss";`
+  - `@source "./src/**/*.rs";`
+  - `@import "./assets/tailwind.css";`
+
+This keeps current styles working while making migration to utility-first classes incremental.
+
+## Keyboard Navigation Map
+
+Expected `Tab` flow order:
+
+1. Skip link (`Skip to dashboard`)
+2. Theme toggle
+3. Planning workspace toggle
+4. API key input
+5. `Load / Refresh Game Data`
+6. `Scan Inventory`
+7. `Auto Sync Progress`
+8. `Run API Diagnostics`
+9. Dashboard filter input
+10. Dashboard tables and planning workspace controls/buttons
+
+Accessibility behavior:
+
+- Status updates are announced via `aria-live="polite"`
+- Error updates use `role="alert"`
+- Progress uses `role="progressbar"` with `aria-valuenow`/`aria-valuemax`
+- Toast notifications are exposed via a polite live region
 
 ## Notes
 

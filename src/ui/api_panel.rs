@@ -24,7 +24,7 @@ pub fn ApiPanel(
     progress: Option<OperationProgress>,
 ) -> Element {
     rsx! {
-        div { class: "panel",
+        section { class: "panel", "aria-label": "API and synchronization controls",
             h2 { "API + Sync" }
             p { class: "muted", "App key from .env: {app_key_masked}" }
             label { "User key (arc_u1_...):" }
@@ -72,10 +72,10 @@ pub fn ApiPanel(
                 }
             }
             if !status_message.is_empty() {
-                p { class: "status", "{status_message}" }
+                p { class: "status", role: "status", "aria-live": "polite", "{status_message}" }
             }
             if !error_message.is_empty() {
-                p { class: "error", "{error_message}" }
+                p { class: "error", role: "alert", "{error_message}" }
             }
             if !diagnostics_rows.is_empty() {
                 h3 { "API Diagnostics Report" }
