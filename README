@@ -1,0 +1,162 @@
+# ARC Cleaner (Rust + Dioxus Desktop)
+
+Desktop tracker for ARC Raiders inventory planning using ArcTracker API plus local data support from `arcraiders-data`.
+
+## What it does
+
+- Scans stash inventory from ArcTracker (`/api/v2/user/stash`)
+- Tracks craft goals (uses item `recipe` data)
+- Tracks quest turn-in item goals
+- Tracks hideout upgrade requirements by target level
+- Tracks project requirements by target phase
+- Shows a dashboard with:
+  - Items you still need to find
+  - Items to keep for tracked goals
+  - Items you can likely sell (not needed by current goals)
+
+## API setup
+
+1. Keep your **app key** in `.env`:
+
+```env
+ARC_APP_KEY=arc_k1_your_app_key
+```
+
+`key=...` is also supported for backward compatibility.
+
+2. In the app UI, paste your **user key** (`arc_u1_...`) into the input field.
+
+Your user key should include at least `stash:read` scope.
+
+For full **Auto Sync Progress** support, include these scopes on your `arc_u1_` key:
+
+- `profile:read`
+- `stash:read`
+- `loadout:read`
+- `quests:read`
+- `hideout:read`
+- `projects:read`
+
+### How to get an `arc_u1_` key
+
+1. Go to https://arctracker.io and sign in.
+2. Open **Settings**.
+3. Go to **Developer Access** (API keys section).
+4. Create a personal user API key.
+5. Copy the key that starts with `arc_u1_...`.
+6. Add at least `stash:read` scope.
+
+You can also place it in `.env` and it will auto-fill:
+
+```env
+user_key=arc_u1_your_user_key
+# or
+ARC_USER_KEY=arc_u1_your_user_key
+```
+
+## Local data/images source (recommended)
+
+The app will automatically use a local `arcraiders-data` repo first, then fall back to ArcTracker API if local data is unavailable.
+
+Default local path:
+
+`vendor/arcraiders-data`
+
+Optional `.env` override:
+
+```env
+ARC_DATA_REPO_DIR=C:\path\to\arcraiders-data
+```
+
+Data attribution:
+
+- https://github.com/RaidTheory/arcraiders-data
+- https://arctracker.io
+
+## Run locally
+
+1. Install Rust (cargo + rustc)
+2. Run:
+
+```bash
+cargo run
+```
+
+If both `key`/`ARC_APP_KEY` and `user_key`/`ARC_USER_KEY` are present at launch, the app now auto-runs:
+
+- Load static game data
+- Scan stash inventory
+- Auto Sync Progress (profile/loadout/quests/hideout/projects)
+
+If a user endpoint returns an error (for example temporary `500` from ArcTracker), existing tracked quest/hideout/project selections are preserved.
+
+## Debug logging
+
+The app now logs startup flow, endpoint requests, parsed counts, warnings, and failures to the terminal.
+
+- Default log level: `info`
+- Verbose troubleshooting: set `RUST_LOG=debug`
+
+Example `.env`:
+
+```env
+RUST_LOG=debug
+```
+
+For API errors, logs include endpoint metadata and `requestId` (when present) so backend failures are easier to trace.
+
+You can also click **Run API Diagnostics** in the app's API panel to get a per-endpoint status table and a copyable report (including request IDs).
+
+## Global API pacing
+
+The app enforces a global delay between HTTP API calls to reduce burst pressure:
+
+- Default: `1000ms` between requests (about `1 request/second`)
+- Configure in `.env`:
+
+```env
+ARC_API_MIN_INTERVAL_MS=1000
+```
+
+Set a higher value later if needed (for example `1500` or `2000`).  
+Set `0` to disable pacing.
+
+Retry behavior for transient API failures is also configurable:
+
+```env
+ARC_API_MAX_RETRIES=2
+ARC_API_RETRY_BASE_MS=1500
+ARC_API_RETRY_MAX_MS=10000
+```
+
+- `ARC_API_MAX_RETRIES`: number of retries after the first failed attempt
+- `ARC_API_RETRY_BASE_MS`: exponential backoff base delay
+- `ARC_API_RETRY_MAX_MS`: max backoff cap
+
+## Sell recommendation safety
+
+`Can Sell` is now conservative by default:
+
+- If quest/hideout/project progress endpoints are unavailable, sell recommendations are paused.
+- This prevents false "safe to sell" suggestions when ArcTracker progress APIs return errors.
+- If you manually add tracking goals in the app, sell recommendations are enabled from those manual requirements.
+
+## Notes
+
+- Public data endpoints used:
+  - `GET https://arctracker.io/api/items`
+  - `GET https://arctracker.io/api/quests`
+  - `GET https://arctracker.io/api/hideout`
+  - `GET https://arctracker.io/api/projects?season=1,2`
+- Authenticated user endpoints used by **Auto Sync Progress**:
+  - `GET https://arctracker.io/api/v2/user/profile?locale=en`
+  - `GET https://arctracker.io/api/v2/user/stash?locale=en&page=...&per_page=500&sort=slot`
+  - `GET https://arctracker.io/api/v2/user/loadout?locale=en`
+  - `GET https://arctracker.io/api/v2/user/quests?locale=en&filter=incomplete`
+  - `GET https://arctracker.io/api/v2/user/quests?locale=en&filter=completed` (fallback to infer incomplete)
+  - `GET https://arctracker.io/api/v2/user/hideout?locale=en`
+  - `GET https://arctracker.io/api/v2/user/projects?locale=en&season=1`
+  - `GET https://arctracker.io/api/v2/user/projects?locale=en&season=2`
+- Auth headers:
+  - `X-App-Key: arc_k1_...`
+  - `Authorization: Bearer arc_u1_...`
