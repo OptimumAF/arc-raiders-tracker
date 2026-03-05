@@ -27,12 +27,21 @@ const DEFAULT_API_RETRY_MAX_MS: u64 = 10000;
 const DEFAULT_STATIC_CACHE_TTL_SECONDS: u64 = 60 * 60 * 24;
 const DEFAULT_STARTUP_USER_CACHE_TTL_SECONDS: u64 = 60 * 5;
 const DEFAULT_IMAGE_PREFETCH_COUNT: usize = 12;
+const DEFAULT_SELL_EXCLUDE_WEAPONS: bool = true;
+const DEFAULT_SELL_EXCLUDE_TYPES: &[&str] = &[
+    "Augment",
+    "Modification",
+    "Ammunition",
+    "Quick Use",
+    "Shield",
+];
 const CACHE_NAMESPACE_STATIC: &str = "static_api";
 const CACHE_NAMESPACE_USER: &str = "user_api";
 const CACHE_NAMESPACE_IMAGES: &str = "images";
 const CACHE_FILE_TRACKED_STATE: &str = "tracked_state.json";
 static API_REQUEST_THROTTLE: OnceLock<ApiRequestThrottle> = OnceLock::new();
 static API_RETRY_CONFIG: OnceLock<ApiRetryConfig> = OnceLock::new();
+static SELL_FILTER_CONFIG: OnceLock<SellFilterConfig> = OnceLock::new();
 
 fn main() {
     dotenvy::dotenv().ok();
@@ -250,6 +259,10 @@ struct ArcData {
 #[serde(rename_all = "camelCase")]
 struct Item {
     id: String,
+    #[serde(default, rename = "type")]
+    item_type: Option<String>,
+    #[serde(default)]
+    is_weapon: bool,
     #[serde(default)]
     name: HashMap<String, String>,
     #[serde(default)]
@@ -428,6 +441,45 @@ struct PersistedTrackedState {
 struct CacheEnvelope {
     saved_at_unix: u64,
     value: Value,
+}
+
+#[derive(Debug)]
+struct SellFilterConfig {
+    exclude_weapons: bool,
+    excluded_types: HashSet<String>,
+}
+
+impl SellFilterConfig {
+    fn from_env() -> Self {
+        let exclude_weapons = first_non_empty_env(&["ARC_SELL_EXCLUDE_WEAPONS"])
+            .and_then(|value| parse_env_bool(&value))
+            .unwrap_or(DEFAULT_SELL_EXCLUDE_WEAPONS);
+
+        let excluded_types = first_non_empty_env(&["ARC_SELL_EXCLUDE_TYPES"])
+            .map(|raw| parse_csv_lower_set(&raw))
+            .filter(|set| !set.is_empty())
+            .unwrap_or_else(|| {
+                DEFAULT_SELL_EXCLUDE_TYPES
+                    .iter()
+                    .map(|value| value.to_ascii_lowercase())
+                    .collect()
+            });
+
+        info!(
+            exclude_weapons,
+            excluded_type_count = excluded_types.len(),
+            "sell_filter: configured can-sell exclusions"
+        );
+
+        Self {
+            exclude_weapons,
+            excluded_types,
+        }
+    }
+}
+
+fn sell_filter_config() -> &'static SellFilterConfig {
+    SELL_FILTER_CONFIG.get_or_init(SellFilterConfig::from_env)
 }
 
 #[component]
@@ -3096,6 +3148,10 @@ fn build_dashboard(
 
     if allow_sell_recommendations {
         for (item_id, quantity) in inventory {
+            if is_excluded_from_sell(data, item_id) {
+                continue;
+            }
+
             let keep_qty = *keep_targets.get(item_id).unwrap_or(&0);
             if *quantity <= keep_qty {
                 continue;
@@ -3122,6 +3178,54 @@ fn build_dashboard(
     sell.sort_by(|a, b| b.total_value.cmp(&a.total_value).then(a.name.cmp(&b.name)));
 
     Dashboard { needs, keep, sell }
+}
+
+fn is_excluded_from_sell(data: &ArcData, item_id: &str) -> bool {
+    let Some(item) = data.items_by_id.get(item_id) else {
+        return false;
+    };
+
+    let config = sell_filter_config();
+    let normalized_type = item
+        .item_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    if config.exclude_weapons {
+        if item.is_weapon {
+            return true;
+        }
+
+        if let Some(item_type) = normalized_type.as_deref() {
+            if is_weapon_item_type(item_type) {
+                return true;
+            }
+        }
+    }
+
+    if let Some(item_type) = normalized_type.as_deref() {
+        return config.excluded_types.contains(item_type);
+    }
+
+    false
+}
+
+fn is_weapon_item_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "assault rifle"
+            | "pistol"
+            | "shotgun"
+            | "battle rifle"
+            | "smg"
+            | "sniper rifle"
+            | "special"
+            | "lmg"
+            | "hand cannon"
+            | "shield"
+    )
 }
 
 fn add_requirement(totals: &mut HashMap<String, u32>, item_id: &str, qty: u32) {
@@ -3522,6 +3626,22 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
         .filter_map(|key| env::var(key).ok())
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
+}
+
+fn parse_env_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_csv_lower_set(raw: &str) -> HashSet<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 const APP_CSS: &str = r#"
