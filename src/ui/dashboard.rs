@@ -144,26 +144,26 @@ pub fn DashboardPanel(
                             }
                         }
                     }
-                    table { class: "table compact", "aria-label": "Items that can be sold",
-                        thead { tr { th { "Item" } th { "Qty" } th { "Value" } } }
-                        tbody {
-                            if suppress_sell_recommendations {
-                                tr { td { colspan: "3", class: "muted", "Paused to avoid inaccurate sell recommendations." } }
-                            } else if sell_rows.is_empty() {
-                                tr { td { colspan: "3", class: "muted", "No excess items to suggest selling." } }
-                            }
-                            for row in sell_rows.iter().take(40) {
-                                tr { key: "{row.name}-{row.quantity}-{row.total_value}",
-                                    td {
-                                        div { class: "item-cell",
-                                            if !row.image_src.is_empty() {
-                                                img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
-                                            }
-                                            span { "{row.name}" }
-                                        }
+                    if !suppress_sell_recommendations && !sell_rows.is_empty() {
+                        p { class: "muted", "Scan-friendly grid view ({sell_rows.len()} item types)." }
+                    }
+                    div { class: "sell-grid", role: "list", "aria-label": "Items that can be sold",
+                        if suppress_sell_recommendations {
+                            p { class: "muted", "Paused to avoid inaccurate sell recommendations." }
+                        } else if sell_rows.is_empty() {
+                            p { class: "muted", "No excess items to suggest selling." }
+                        }
+                        for row in sell_rows.iter() {
+                            div { class: "sell-item", key: "{row.name}-{row.quantity}-{row.total_value}", role: "listitem",
+                                div { class: "item-cell",
+                                    if !row.image_src.is_empty() {
+                                        img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
                                     }
-                                    td { "{row.quantity}" }
-                                    td { "{row.total_value}" }
+                                    span { class: "sell-name", "{row.name}" }
+                                }
+                                div { class: "sell-meta",
+                                    span { class: "sell-pill", "Qty {row.quantity}" }
+                                    span { class: "sell-pill value", "{row.total_value}" }
                                 }
                             }
                         }
