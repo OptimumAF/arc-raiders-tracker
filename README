@@ -2,6 +2,13 @@
 
 Desktop tracker for ARC Raiders inventory planning using ArcTracker API plus local data support from `arcraiders-data`.
 
+## Open Source
+
+- License: MIT ([LICENSE](LICENSE))
+- Contributions: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+
 ## What it does
 
 - Scans stash inventory from ArcTracker (`/api/v2/user/stash`)
@@ -76,7 +83,8 @@ Data attribution:
 ## Run locally
 
 1. Install Rust (cargo + rustc)
-2. Run:
+2. Copy `.env.example` to `.env` and set your keys.
+3. Run:
 
 ```bash
 cargo run
@@ -213,6 +221,13 @@ The UI is now split into component files:
 - `src/ui/dashboard.rs`
 - `src/ui/tracking_panels.rs`
 - `src/ui/widgets.rs`
+
+## Community Workflow
+
+- Open bugs and features using GitHub issue templates.
+- Use pull requests for all code changes.
+- CI runs `fmt`, `clippy`, and `cargo check` on PRs to `master`.
+- Dependabot is enabled for Rust crates and GitHub Actions updates.
 
 ## Tailwind-ready styling
 

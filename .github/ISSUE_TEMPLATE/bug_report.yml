@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a defect or regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide exact steps to reproduce.
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / diagnostics
+      description: Paste relevant logs, request IDs, or screenshots.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: "v0.1.0"
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11"
