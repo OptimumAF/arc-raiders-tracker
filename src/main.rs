@@ -434,6 +434,10 @@ struct PersistedTrackedState {
     tracked_quests: Vec<String>,
     tracked_hideout: Vec<TrackedHideout>,
     tracked_projects: Vec<TrackedProject>,
+    #[serde(default = "default_theme_preference")]
+    theme_preference: String,
+    #[serde(default = "default_show_planning_workspace")]
+    show_planning_workspace: bool,
     saved_at_unix: u64,
 }
 
@@ -489,6 +493,8 @@ fn App() -> Element {
     let initial_tracked_quests = persisted_state.tracked_quests.clone();
     let initial_tracked_hideout = persisted_state.tracked_hideout.clone();
     let initial_tracked_projects = persisted_state.tracked_projects.clone();
+    let initial_theme_preference = normalize_theme_preference(&persisted_state.theme_preference);
+    let initial_show_planning_workspace = persisted_state.show_planning_workspace;
 
     let default_app_key = first_non_empty_env(&["key", "ARC_APP_KEY"]).unwrap_or_default();
     let default_user_key =
@@ -506,6 +512,9 @@ fn App() -> Element {
     let tracked_quests = use_signal(move || initial_tracked_quests.clone());
     let tracked_hideout = use_signal(move || initial_tracked_hideout.clone());
     let tracked_projects = use_signal(move || initial_tracked_projects.clone());
+    let theme_preference = use_signal(move || initial_theme_preference.clone());
+    let show_planning_workspace = use_signal(move || initial_show_planning_workspace);
+    let mut dashboard_filter = use_signal(String::new);
 
     let mut craft_pick = use_signal(String::new);
     let mut craft_qty = use_signal(|| "1".to_string());
@@ -586,6 +595,58 @@ fn App() -> Element {
         Vec::new()
     };
     required_rows.sort_by(|a, b| b.missing.cmp(&a.missing).then(a.name.cmp(&b.name)));
+
+    let theme_value = normalize_theme_preference(theme_preference.read().as_str());
+    let theme_data_attr = if theme_value == "system" {
+        String::new()
+    } else {
+        theme_value.clone()
+    };
+    let theme_button_text = format!("Theme: {}", theme_preference_label(&theme_value));
+
+    let dashboard_query = dashboard_filter.read().trim().to_ascii_lowercase();
+    let sell_rows_filtered: Vec<SellRow> = if dashboard_query.is_empty() {
+        dashboard.sell.clone()
+    } else {
+        dashboard
+            .sell
+            .iter()
+            .filter(|row| row.name.to_ascii_lowercase().contains(&dashboard_query))
+            .cloned()
+            .collect()
+    };
+    let need_rows_filtered: Vec<NeedRow> = if dashboard_query.is_empty() {
+        dashboard.needs.clone()
+    } else {
+        dashboard
+            .needs
+            .iter()
+            .filter(|row| row.name.to_ascii_lowercase().contains(&dashboard_query))
+            .cloned()
+            .collect()
+    };
+    let keep_rows_filtered: Vec<NeedRow> = if dashboard_query.is_empty() {
+        dashboard.keep.clone()
+    } else {
+        dashboard
+            .keep
+            .iter()
+            .filter(|row| row.name.to_ascii_lowercase().contains(&dashboard_query))
+            .cloned()
+            .collect()
+    };
+    let required_rows_filtered: Vec<NeedRow> = if dashboard_query.is_empty() {
+        required_rows.clone()
+    } else {
+        required_rows
+            .iter()
+            .filter(|row| row.name.to_ascii_lowercase().contains(&dashboard_query))
+            .cloned()
+            .collect()
+    };
+    let sell_total_qty: u32 = dashboard.sell.iter().map(|row| row.quantity).sum();
+    let sell_total_value: u64 = dashboard.sell.iter().map(|row| row.total_value).sum();
+    let missing_total: u32 = dashboard.needs.iter().map(|row| row.missing).sum();
 
     let load_data_action = {
         let static_data = static_data.clone();
@@ -1105,12 +1166,16 @@ fn App() -> Element {
         let tracked_quests = tracked_quests.clone();
         let tracked_hideout = tracked_hideout.clone();
         let tracked_projects = tracked_projects.clone();
+        let theme_preference = theme_preference.clone();
+        let show_planning_workspace = show_planning_workspace.clone();
         use_effect(move || {
             let snapshot = PersistedTrackedState {
                 tracked_crafts: tracked_crafts.read().clone(),
                 tracked_quests: tracked_quests.read().clone(),
                 tracked_hideout: tracked_hideout.read().clone(),
                 tracked_projects: tracked_projects.read().clone(),
+                theme_preference: normalize_theme_preference(theme_preference.read().as_str()),
+                show_planning_workspace: *show_planning_workspace.read(),
                 saved_at_unix: now_unix_seconds(),
             };
             if let Err(err) = save_tracked_state(&snapshot) {
@@ -1125,14 +1190,44 @@ fn App() -> Element {
     rsx! {
         style { "{APP_CSS}" }
 
-        div { class: "app-shell",
+        div { class: "app-shell", "data-theme": "{theme_data_attr}",
             div { class: "header",
-                h1 { "ARC Cleaner Desktop" }
-                p { "Rust + Dioxus desktop tracker powered by ArcTracker.io" }
+                div {
+                    h1 { "ARC Cleaner Desktop" }
+                    p { "Rust + Dioxus desktop tracker powered by ArcTracker.io" }
+                }
+                div { class: "header-controls",
+                    button {
+                        class: "ghost",
+                        onclick: {
+                            let mut theme_preference = theme_preference.clone();
+                            move |_| {
+                                let next = next_theme_preference(theme_preference.read().as_str());
+                                theme_preference.set(next);
+                            }
+                        },
+                        "{theme_button_text}"
+                    }
+                    button {
+                        class: "ghost",
+                        onclick: {
+                            let mut show_planning_workspace = show_planning_workspace.clone();
+                            move |_| {
+                                let current = *show_planning_workspace.read();
+                                show_planning_workspace.set(!current);
+                            }
+                        },
+                        if *show_planning_workspace.read() {
+                            "Hide Planning Workspace"
+                        } else {
+                            "Show Planning Workspace"
+                        }
+                    }
+                }
             }
 
             div { class: "panel",
-                h2 { "API" }
+                h2 { "API + Sync" }
                 p { class: "muted", "App key from .env: {app_key_masked}" }
                 label { "User key (arc_u1_...):" }
                 input {
@@ -1170,7 +1265,7 @@ fn App() -> Element {
                             "User: {profile.username}"
                         }
                         if let Some(member_since) = profile.member_since.as_ref() {
-                            " • Member since: {member_since}"
+                            " | Member since: {member_since}"
                         }
                     }
                 }
@@ -1213,6 +1308,27 @@ fn App() -> Element {
                 div { class: "panel dashboard-panel",
                     h2 { "Dashboard" }
                     p { class: "muted", "Compares scanned inventory against all tracked requirements. Prioritizing what you can sell first." }
+                    div { class: "dashboard-toolbar",
+                        input {
+                            value: "{dashboard_filter.read()}",
+                            placeholder: "Filter items in dashboard and requirements...",
+                            oninput: move |evt| dashboard_filter.set(evt.value()),
+                        }
+                    }
+                    div { class: "stats-grid",
+                        div { class: "stat-chip",
+                            p { class: "dash-num", "Sell Qty" }
+                            strong { "{sell_total_qty}" }
+                        }
+                        div { class: "stat-chip",
+                            p { class: "dash-num", "Sell Value" }
+                            strong { "{sell_total_value}" }
+                        }
+                        div { class: "stat-chip",
+                            p { class: "dash-num", "Missing Items" }
+                            strong { "{missing_total}" }
+                        }
+                    }
 
                     div { class: "dashboard-priority",
                         div { class: "dashboard-card can-sell-card",
@@ -1232,10 +1348,10 @@ fn App() -> Element {
                                 tbody {
                                     if suppress_sell_recommendations {
                                         tr { td { colspan: "3", class: "muted", "Paused to avoid inaccurate sell recommendations." } }
-                                    } else if dashboard.sell.is_empty() {
+                                    } else if sell_rows_filtered.is_empty() {
                                         tr { td { colspan: "3", class: "muted", "No excess items to suggest selling." } }
                                     }
-                                    for row in dashboard.sell.iter().take(40) {
+                                    for row in sell_rows_filtered.iter().take(40) {
                                         tr {
                                             td {
                                                 div { class: "item-cell",
@@ -1260,10 +1376,10 @@ fn App() -> Element {
                             table { class: "table compact",
                                 thead { tr { th { "Item" } th { "Missing" } th { "Have/Need" } } }
                                 tbody {
-                                    if dashboard.needs.is_empty() {
+                                    if need_rows_filtered.is_empty() {
                                         tr { td { colspan: "3", class: "muted", "No missing items based on current tracking." } }
                                     }
-                                    for row in dashboard.needs.iter().take(20) {
+                                    for row in need_rows_filtered.iter().take(20) {
                                         tr {
                                             td {
                                                 div { class: "item-cell",
@@ -1286,10 +1402,10 @@ fn App() -> Element {
                             table { class: "table compact",
                                 thead { tr { th { "Item" } th { "Need" } th { "Have" } } }
                                 tbody {
-                                    if dashboard.keep.is_empty() {
+                                    if keep_rows_filtered.is_empty() {
                                         tr { td { colspan: "3", class: "muted", "No tracked requirement items yet." } }
                                     }
-                                    for row in dashboard.keep.iter().take(20) {
+                                    for row in keep_rows_filtered.iter().take(20) {
                                         tr {
                                             td {
                                                 div { class: "item-cell",
@@ -1309,7 +1425,8 @@ fn App() -> Element {
                     }
                 }
 
-                div { class: "grid-two",
+                if *show_planning_workspace.read() {
+                    div { class: "grid-two",
                     div { class: "panel",
                         h2 { "Track Crafts" }
                         p { class: "muted", "Pick a craftable item and how many outputs you want to build." }
@@ -1446,7 +1563,7 @@ fn App() -> Element {
                     }
                 }
 
-                div { class: "grid-two",
+                    div { class: "grid-two",
                     div { class: "panel",
                         h2 { "Track Hideout Upgrades" }
                         p { class: "muted", "Target level includes all requirements from level 1 up to that level." }
@@ -1611,30 +1728,36 @@ fn App() -> Element {
                     }
                 }
 
-                div { class: "panel",
-                    h2 { "All Required Items" }
-                    table { class: "table",
-                        thead { tr { th { "Item" } th { "Required" } th { "Have" } th { "Missing" } } }
-                        tbody {
-                            if required_rows.is_empty() {
-                                tr { td { colspan: "4", class: "muted", "No requirements tracked yet." } }
-                            }
-                            for row in required_rows.iter() {
-                                tr {
-                                    td {
-                                        div { class: "item-cell",
-                                            if !row.image_src.is_empty() {
-                                                img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
+                    div { class: "panel",
+                        h2 { "All Required Items" }
+                        table { class: "table",
+                            thead { tr { th { "Item" } th { "Required" } th { "Have" } th { "Missing" } } }
+                            tbody {
+                                if required_rows_filtered.is_empty() {
+                                    tr { td { colspan: "4", class: "muted", "No requirements tracked yet." } }
+                                }
+                                for row in required_rows_filtered.iter() {
+                                    tr {
+                                        td {
+                                            div { class: "item-cell",
+                                                if !row.image_src.is_empty() {
+                                                    img { class: "item-icon", src: "{row.image_src}", alt: "{row.name}" }
+                                                }
+                                                span { "{row.name}" }
                                             }
-                                            span { "{row.name}" }
                                         }
+                                        td { "{row.required}" }
+                                        td { "{row.have}" }
+                                        td { "{row.missing}" }
                                     }
-                                    td { "{row.required}" }
-                                    td { "{row.have}" }
-                                    td { "{row.missing}" }
                                 }
                             }
                         }
+                    }
+                } else {
+                    div { class: "panel subtle-panel",
+                        h2 { "Planning Workspace Hidden" }
+                        p { class: "muted", "Use 'Show Planning Workspace' to edit tracked crafts, quests, hideout upgrades, and projects." }
                     }
                 }
             } else {
@@ -3334,6 +3457,14 @@ fn default_start_phase() -> u32 {
     1
 }
 
+fn default_theme_preference() -> String {
+    "system".to_string()
+}
+
+fn default_show_planning_workspace() -> bool {
+    true
+}
+
 fn value_as_u32(value: &Value) -> Option<u32> {
     match value {
         Value::Number(num) => num.as_u64().and_then(|v| u32::try_from(v).ok()),
@@ -3628,6 +3759,30 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
         .find(|value| !value.is_empty())
 }
 
+fn normalize_theme_preference(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "dark" => "dark".to_string(),
+        "light" => "light".to_string(),
+        _ => "system".to_string(),
+    }
+}
+
+fn next_theme_preference(current: &str) -> String {
+    match current {
+        "system" => "dark".to_string(),
+        "dark" => "light".to_string(),
+        _ => "system".to_string(),
+    }
+}
+
+fn theme_preference_label(theme: &str) -> &'static str {
+    match theme {
+        "dark" => "Dark",
+        "light" => "Light",
+        _ => "System",
+    }
+}
+
 fn parse_env_bool(raw: &str) -> Option<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "y" | "on" => Some(true),
@@ -3645,138 +3800,290 @@ fn parse_csv_lower_set(raw: &str) -> HashSet<String> {
 }
 
 const APP_CSS: &str = r#"
+:root {
+  --font-sans: "Inter", "Segoe UI", "Helvetica Neue", sans-serif;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --space-1: 6px;
+  --space-2: 10px;
+  --space-3: 14px;
+  --space-4: 20px;
+  --color-bg: #f3f7fc;
+  --color-surface: #ffffff;
+  --color-surface-strong: #edf2f9;
+  --color-border: #d5dfec;
+  --color-text: #132030;
+  --color-muted: #50667f;
+  --color-primary: #245fb6;
+  --color-primary-soft: #dce8fb;
+  --color-success: #0d7a3b;
+  --color-danger: #b4232f;
+  --shadow-panel: 0 8px 24px rgba(17, 34, 60, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #12161d;
+    --color-surface: #171d26;
+    --color-surface-strong: #101620;
+    --color-border: #2d3747;
+    --color-text: #e8eef5;
+    --color-muted: #9db0c6;
+    --color-primary: #6ea9ff;
+    --color-primary-soft: #182840;
+    --color-success: #74d99f;
+    --color-danger: #ff9aa2;
+    --shadow-panel: 0 10px 28px rgba(0, 0, 0, 0.28);
+  }
+}
+
+.app-shell[data-theme="light"] {
+  --color-bg: #f3f7fc;
+  --color-surface: #ffffff;
+  --color-surface-strong: #edf2f9;
+  --color-border: #d5dfec;
+  --color-text: #132030;
+  --color-muted: #50667f;
+  --color-primary: #245fb6;
+  --color-primary-soft: #dce8fb;
+  --color-success: #0d7a3b;
+  --color-danger: #b4232f;
+  --shadow-panel: 0 8px 24px rgba(17, 34, 60, 0.08);
+}
+
+.app-shell[data-theme="dark"] {
+  --color-bg: #12161d;
+  --color-surface: #171d26;
+  --color-surface-strong: #101620;
+  --color-border: #2d3747;
+  --color-text: #e8eef5;
+  --color-muted: #9db0c6;
+  --color-primary: #6ea9ff;
+  --color-primary-soft: #182840;
+  --color-success: #74d99f;
+  --color-danger: #ff9aa2;
+  --shadow-panel: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
 * { box-sizing: border-box; }
+
 body {
   margin: 0;
-  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-  background: #0e1117;
-  color: #e6edf3;
+  font-family: var(--font-sans);
+  background: radial-gradient(circle at 20% -10%, var(--color-primary-soft), transparent 38%), var(--color-bg);
+  color: var(--color-text);
+  transition: background 160ms ease, color 160ms ease;
 }
 
 .app-shell {
-  max-width: 1400px;
+  max-width: 1440px;
   margin: 0 auto;
-  padding: 20px;
+  padding: var(--space-4);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
 }
 
 .header h1 {
   margin: 0 0 4px;
-  font-size: 30px;
+  font-size: clamp(28px, 3vw, 34px);
+  letter-spacing: 0.02em;
 }
 
 .header p {
-  margin: 0 0 14px;
-  color: #9fb1c5;
+  margin: 0 0 var(--space-2);
+  color: var(--color-muted);
+}
+
+.header-controls {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
 }
 
 .panel {
-  background: #171b23;
-  border: 1px solid #2b3545;
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 14px;
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(2px);
+}
+
+.subtle-panel {
+  border-style: dashed;
 }
 
 h2, h3 {
-  margin: 0 0 10px;
+  margin: 0 0 var(--space-2);
+}
+
+h2 {
+  font-size: 20px;
+}
+
+h3 {
+  font-size: 16px;
 }
 
 .muted {
-  color: #96a8bb;
+  color: var(--color-muted);
   margin-top: 0;
+}
+
+.dash-num {
+  margin: 0;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
 }
 
 .grid-two {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: var(--space-3);
 }
 
 .grid-three {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 14px;
+  gap: var(--space-3);
 }
 
 .dashboard-panel {
-  border-color: #35557c;
-  box-shadow: 0 0 0 1px rgba(72, 121, 176, 0.15), 0 10px 26px rgba(0, 0, 0, 0.25);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
+}
+
+.dashboard-toolbar {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-2);
+}
+
+.stat-chip {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+.stat-chip strong {
+  font-size: 18px;
 }
 
 .dashboard-priority {
-  margin-top: 10px;
+  margin-top: var(--space-2);
 }
 
 .dashboard-secondary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 14px;
-  margin-top: 14px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 
 .dashboard-card {
-  background: #111824;
-  border: 1px solid #2a3b52;
-  border-radius: 10px;
-  padding: 10px;
+  background: var(--color-surface-strong);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
 }
 
 .can-sell-card {
-  background: linear-gradient(180deg, #182332 0%, #121d2b 100%);
-  border-color: #486d98;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-primary-soft) 62%, var(--color-surface-strong)) 0%,
+    var(--color-surface-strong) 100%
+  );
+  border-color: color-mix(in srgb, var(--color-primary) 46%, var(--color-border));
 }
 
 .can-sell-card h3 {
-  color: #b6dbff;
+  color: var(--color-primary);
 }
 
 .row {
   display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 
 .actions {
   display: flex;
-  gap: 8px;
-  margin-top: 10px;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
 }
 
 input,
 select,
 button {
-  background: #0f141d;
-  border: 1px solid #334155;
-  color: #e6edf3;
-  border-radius: 8px;
-  padding: 8px 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  font: inherit;
 }
 
 input,
 select {
   flex: 1;
+  min-width: 180px;
 }
 
 button {
   cursor: pointer;
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 36%, var(--color-border));
+  transition: transform 160ms ease, filter 160ms ease, background 160ms ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
 }
 
 button:disabled {
-  opacity: 0.55;
+  opacity: 0.58;
   cursor: default;
 }
 
+button.ghost {
+  background: var(--color-surface);
+}
+
 button.danger {
-  border-color: #7f1d1d;
-  color: #fecaca;
+  border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-border));
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 11%, var(--color-surface));
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 62%, transparent);
+  outline-offset: 1px;
 }
 
 .status {
-  color: #86efac;
+  color: var(--color-success);
 }
 
 .error {
-  color: #fda4af;
+  color: var(--color-danger);
 }
 
 .table {
@@ -3787,7 +4094,7 @@ button.danger {
 .table th,
 .table td {
   text-align: left;
-  border-bottom: 1px solid #273244;
+  border-bottom: 1px solid var(--color-border);
   padding: 8px 6px;
   vertical-align: top;
 }
@@ -3818,17 +4125,21 @@ button.danger {
 .diagnostics-report {
   margin: 8px 0 0;
   white-space: pre-wrap;
-  background: #0d131d;
-  border: 1px solid #2a3b52;
-  border-radius: 8px;
-  padding: 10px;
+  background: var(--color-surface-strong);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
   max-height: 260px;
   overflow: auto;
 }
 
-@media (max-width: 820px) {
+@media (max-width: 900px) {
   .app-shell {
     padding: 12px;
+  }
+
+  .header {
+    flex-direction: column;
   }
 
   .grid-two,
@@ -3839,6 +4150,13 @@ button.danger {
   .row,
   .actions {
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }
 "#;

@@ -164,6 +164,15 @@ The app now persists tracked goals and caches selected network data on disk to r
   - Default prefetch count: `12`
   - Override: `ARC_IMAGE_PREFETCH_COUNT=12`
 
+## UI modernization (current)
+
+- Theme system with design-token based colors
+- `System -> Dark -> Light` theme toggle in the header (persisted on disk)
+- OS dark-mode fallback through `prefers-color-scheme`
+- Reduced motion support through `prefers-reduced-motion`
+- Dashboard filter input shared across `Can Sell`, `Need To Find`, `Keep In Stash`, and `All Required Items`
+- Dashboard-first workflow with a toggle to hide/show planning panels
+
 ## Notes
 
 - Public data endpoints used:
