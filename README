@@ -82,6 +82,29 @@ Data attribution:
 cargo run
 ```
 
+## GitHub Releases (Windows EXE)
+
+A GitHub Actions workflow is included at:
+
+- `.github/workflows/release-windows.yml`
+
+It builds `arc-cleaner.exe` on `windows-latest` and uploads release assets:
+
+- `arc-cleaner.exe`
+- `arc-cleaner-windows-x86_64.zip`
+- `arc-cleaner-windows-x86_64.zip.sha256`
+
+How to publish:
+
+1. Push a version tag (recommended):
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+2. Or run manually in **GitHub Actions** using `workflow_dispatch` and provide `tag_name` (for example `v0.1.0`).
+
 If both `key`/`ARC_APP_KEY` and `user_key`/`ARC_USER_KEY` are present at launch, the app now auto-runs:
 
 - Load static game data

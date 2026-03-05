@@ -1,0 +1,78 @@
+name: Release Windows EXE
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (example: v0.1.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark this release as prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag_name }}"
+            $pre = "${{ inputs.prerelease }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+            $pre = "false"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "Unable to resolve release tag."
+          }
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "prerelease=$pre" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package EXE + checksum
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/arc-cleaner.exe dist/arc-cleaner.exe -Force
+          Compress-Archive -Path dist/arc-cleaner.exe -DestinationPath dist/arc-cleaner-windows-x86_64.zip -Force
+          $hash = (Get-FileHash dist/arc-cleaner-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash *arc-cleaner-windows-x86_64.zip" | Out-File -FilePath dist/arc-cleaner-windows-x86_64.zip.sha256 -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ARC Cleaner ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          files: |
+            dist/arc-cleaner.exe
+            dist/arc-cleaner-windows-x86_64.zip
+            dist/arc-cleaner-windows-x86_64.zip.sha256
