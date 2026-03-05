@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use dioxus::prelude::*;
 use reqwest::{Client, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -1522,7 +1523,7 @@ fn load_static_data_from_repo(repo_dir: &Path) -> Result<ArcData> {
     let mut items: Vec<Item> = load_json_files_from_dir(&items_dir)
         .with_context(|| format!("failed to load items from '{}'", items_dir.display()))?;
     for item in &mut items {
-        if let Some(local_uri) = local_item_image_uri(&local_images_dir, &item.id) {
+        if let Some(local_uri) = local_item_image_data_uri(&local_images_dir, &item.id) {
             item.image_filename = Some(local_uri);
         }
     }
@@ -1617,34 +1618,13 @@ where
     Ok(result)
 }
 
-fn local_item_image_uri(images_dir: &Path, item_id: &str) -> Option<String> {
+fn local_item_image_data_uri(images_dir: &Path, item_id: &str) -> Option<String> {
     let candidate = images_dir.join(format!("{item_id}.png"));
     if !candidate.exists() {
         return None;
     }
-    Some(path_to_file_uri(&candidate))
-}
-
-fn path_to_file_uri(path: &Path) -> String {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut normalized = canonical.to_string_lossy().replace('\\', "/");
-
-    #[cfg(windows)]
-    {
-        if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
-            normalized = format!("//{rest}");
-        } else if let Some(rest) = normalized.strip_prefix("//?/") {
-            normalized = rest.to_string();
-        }
-    }
-
-    normalized = normalized.replace(' ', "%20");
-
-    if !normalized.starts_with('/') {
-        normalized = format!("/{normalized}");
-    }
-
-    format!("file://{normalized}")
+    let bytes = fs::read(&candidate).ok()?;
+    Some(format!("data:image/png;base64,{}", BASE64.encode(bytes)))
 }
 
 async fn fetch_stash_inventory(
@@ -2881,7 +2861,7 @@ fn item_image_src(data: &ArcData, item_id: &str) -> String {
     }
 
     if let Some(images_dir) = data.local_images_dir.as_ref() {
-        if let Some(uri) = local_item_image_uri(images_dir, item_id) {
+        if let Some(uri) = local_item_image_data_uri(images_dir, item_id) {
             return uri;
         }
     }
