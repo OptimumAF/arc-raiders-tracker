@@ -26,14 +26,7 @@ pub fn ApiPanel(
     rsx! {
         section { class: "panel", "aria-label": "API and synchronization controls",
             h2 { "API + Sync" }
-            p { class: "muted", "App key from .env: {app_key_masked}" }
-            label { "User key (arc_u1_...):" }
-            input {
-                value: "{user_key}",
-                placeholder: "arc_u1_your_user_key",
-                "aria-label": "User API key",
-                oninput: move |evt| on_user_key_input.call(evt),
-            }
+            p { class: "muted", "Run sync operations here. API credentials are available under Settings." }
             div { class: "actions",
                 button {
                     disabled: loading_data,
@@ -54,6 +47,23 @@ pub fn ApiPanel(
                     disabled: diagnostics_running,
                     onclick: move |evt| on_run_diagnostics.call(evt),
                     if diagnostics_running { "Running Diagnostics..." } else { "Run API Diagnostics" }
+                }
+            }
+            details { class: "settings-disclosure",
+                summary { class: "settings-summary", "Settings" }
+                div { class: "settings-body",
+                    p { class: "muted", "App key from .env: {app_key_masked}" }
+                    div {
+                        class: "settings-field",
+                        label { class: "field-label", "User key (arc_u1_...)" }
+                        input {
+                            value: "{user_key}",
+                            placeholder: "arc_u1_your_user_key",
+                            "aria-label": "User API key",
+                            oninput: move |evt| on_user_key_input.call(evt),
+                        }
+                    }
+                    p { class: "muted", "User keys grant access to personal data. Keep them user-provided and revocable." }
                 }
             }
             if let Some(progress) = progress.as_ref() {

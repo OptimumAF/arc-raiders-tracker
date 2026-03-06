@@ -46,6 +46,7 @@ const CACHE_FILE_TRACKED_STATE: &str = "tracked_state.json";
 static API_REQUEST_THROTTLE: OnceLock<ApiRequestThrottle> = OnceLock::new();
 static API_RETRY_CONFIG: OnceLock<ApiRetryConfig> = OnceLock::new();
 static SELL_FILTER_CONFIG: OnceLock<SellFilterConfig> = OnceLock::new();
+const COMPILED_APP_KEY: Option<&str> = option_env!("ARC_APP_KEY");
 
 fn main() {
     dotenvy::dotenv().ok();
@@ -524,7 +525,9 @@ fn App() -> Element {
     let initial_theme_preference = normalize_theme_preference(&persisted_state.theme_preference);
     let initial_show_planning_workspace = persisted_state.show_planning_workspace;
 
-    let default_app_key = first_non_empty_env(&["key", "ARC_APP_KEY"]).unwrap_or_default();
+    let default_app_key = first_non_empty_env(&["key", "ARC_APP_KEY"])
+        .or_else(compiled_app_key)
+        .unwrap_or_default();
     let default_user_key =
         first_non_empty_env(&["user_key", "ARC_USER_KEY", "arc_user_key"]).unwrap_or_default();
 
@@ -3561,6 +3564,13 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
         .filter_map(|key| env::var(key).ok())
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
+}
+
+fn compiled_app_key() -> Option<String> {
+    COMPILED_APP_KEY
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn normalize_theme_preference(raw: &str) -> String {

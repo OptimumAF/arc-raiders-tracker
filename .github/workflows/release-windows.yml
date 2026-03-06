@@ -24,6 +24,8 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    env:
+      ARC_APP_KEY: ${{ secrets.ARC_APP_KEY }}
 
     steps:
       - name: Checkout

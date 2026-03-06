@@ -299,6 +299,44 @@ h3 {
   flex-wrap: wrap;
 }
 
+.settings-disclosure {
+  margin-top: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-strong);
+}
+
+.settings-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+
+.settings-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-summary::before {
+  content: "+";
+  display: inline-block;
+  width: 14px;
+  margin-right: 6px;
+  color: var(--color-primary);
+}
+
+.settings-disclosure[open] .settings-summary::before {
+  content: "-";
+}
+
+.settings-body {
+  padding: 0 12px 12px;
+}
+
+.settings-field {
+  margin-bottom: var(--space-2);
+}
+
 input,
 select,
 button {
