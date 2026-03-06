@@ -104,14 +104,19 @@ It builds `arc-cleaner.exe` on `windows-latest` and uploads release assets:
 
 How to publish:
 
-1. Push a version tag (recommended):
+1. Push to `master`:
+
+- Updates a rolling prerelease named `ARC Cleaner rolling-master`
+- Uses the release tag `rolling-master`
+
+2. Push a version tag for a versioned release:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-2. Or run manually in **GitHub Actions** using `workflow_dispatch` and provide `tag_name` (for example `v0.1.0`).
+3. Or run manually in **GitHub Actions** using `workflow_dispatch` and provide `tag_name` (for example `v0.1.0`).
 
 If both `key`/`ARC_APP_KEY` and `user_key`/`ARC_USER_KEY` are present at launch, the app now auto-runs:
 

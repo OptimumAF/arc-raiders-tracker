@@ -2,6 +2,8 @@ name: Release Windows EXE
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
   workflow_dispatch:
@@ -40,9 +42,15 @@ jobs:
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $tag = "${{ inputs.tag_name }}"
             $pre = "${{ inputs.prerelease }}"
+            $name = "ARC Cleaner $tag"
+          } elseif ("${{ github.ref_type }}" -eq "branch" -and "${{ github.ref_name }}" -eq "master") {
+            $tag = "rolling-master"
+            $pre = "true"
+            $name = "ARC Cleaner rolling-master"
           } else {
             $tag = "${{ github.ref_name }}"
             $pre = "false"
+            $name = "ARC Cleaner $tag"
           }
 
           if ([string]::IsNullOrWhiteSpace($tag)) {
@@ -51,6 +59,7 @@ jobs:
 
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "prerelease=$pre" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -68,10 +77,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: ARC Cleaner ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
           files: |
             dist/arc-cleaner.exe
             dist/arc-cleaner-windows-x86_64.zip
