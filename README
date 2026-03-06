@@ -31,6 +31,8 @@ ARC_APP_KEY=arc_k1_your_app_key
 
 `key=...` is also supported for backward compatibility.
 
+GitHub release builds can also embed the app key at compile time from the repository secret `ARC_APP_KEY`. Runtime `.env` still overrides the compiled value when present.
+
 2. In the app UI, paste your **user key** (`arc_u1_...`) into the input field.
 
 Your user key should include at least `stash:read` scope.
