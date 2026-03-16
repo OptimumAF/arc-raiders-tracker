@@ -11,28 +11,20 @@ use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 struct ApiRequestThrottle {
-    min_interval: Duration,
     next_allowed: tokio::sync::Mutex<Option<Instant>>,
 }
 
 impl ApiRequestThrottle {
-    fn from_env() -> Self {
-        let configured_ms = crate::first_non_empty_env(&["ARC_API_MIN_INTERVAL_MS"])
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(crate::DEFAULT_API_MIN_INTERVAL_MS);
-        let min_interval = Duration::from_millis(configured_ms);
-        info!(
-            min_interval_ms = configured_ms,
-            "api_throttle: configured global API minimum interval"
-        );
+    fn new() -> Self {
         Self {
-            min_interval,
             next_allowed: tokio::sync::Mutex::new(None),
         }
     }
 
     async fn wait_turn(&self, endpoint_hint: Option<&str>) {
-        if self.min_interval.is_zero() {
+        let min_interval =
+            Duration::from_millis(crate::support::runtime_settings_snapshot().api_min_interval_ms);
+        if min_interval.is_zero() {
             return;
         }
 
@@ -40,7 +32,7 @@ impl ApiRequestThrottle {
         let delay = {
             let mut next_allowed = self.next_allowed.lock().await;
             let scheduled = next_allowed.filter(|next| *next > now).unwrap_or(now);
-            *next_allowed = Some(scheduled + self.min_interval);
+            *next_allowed = Some(scheduled + min_interval);
             scheduled.saturating_duration_since(now)
         };
 
@@ -57,7 +49,10 @@ impl ApiRequestThrottle {
 
 fn api_request_throttle() -> &'static ApiRequestThrottle {
     static API_REQUEST_THROTTLE: OnceLock<ApiRequestThrottle> = OnceLock::new();
-    API_REQUEST_THROTTLE.get_or_init(ApiRequestThrottle::from_env)
+    API_REQUEST_THROTTLE.get_or_init(|| {
+        info!("api_throttle: initialized global API throttle");
+        ApiRequestThrottle::new()
+    })
 }
 
 #[derive(Debug)]
@@ -68,29 +63,13 @@ struct ApiRetryConfig {
 }
 
 impl ApiRetryConfig {
-    fn from_env() -> Self {
-        let max_retries = crate::first_non_empty_env(&["ARC_API_MAX_RETRIES"])
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .unwrap_or(crate::DEFAULT_API_MAX_RETRIES);
-        let base_ms = crate::first_non_empty_env(&["ARC_API_RETRY_BASE_MS"])
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(crate::DEFAULT_API_RETRY_BASE_MS);
-        let max_ms = crate::first_non_empty_env(&["ARC_API_RETRY_MAX_MS"])
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(crate::DEFAULT_API_RETRY_MAX_MS)
-            .max(base_ms);
-
-        info!(
-            max_retries,
-            retry_base_ms = base_ms,
-            retry_max_ms = max_ms,
-            "api_retry: configured retry policy"
-        );
+    fn current() -> Self {
+        let settings = crate::support::runtime_settings_snapshot();
 
         Self {
-            max_retries,
-            base_delay: Duration::from_millis(base_ms),
-            max_delay: Duration::from_millis(max_ms),
+            max_retries: settings.api_max_retries,
+            base_delay: Duration::from_millis(settings.api_retry_base_ms),
+            max_delay: Duration::from_millis(settings.api_retry_max_ms),
         }
     }
 
@@ -104,11 +83,6 @@ impl ApiRetryConfig {
         let max_ms = self.max_delay.as_millis() as u64;
         Duration::from_millis(base_ms.saturating_mul(multiplier).min(max_ms))
     }
-}
-
-fn api_retry_config() -> &'static ApiRetryConfig {
-    static API_RETRY_CONFIG: OnceLock<ApiRetryConfig> = OnceLock::new();
-    API_RETRY_CONFIG.get_or_init(ApiRetryConfig::from_env)
 }
 
 pub async fn get_json<T>(request: reqwest::RequestBuilder) -> Result<T>
@@ -130,7 +104,7 @@ where
         debug!("get_json: sending request");
     }
 
-    let retry = api_retry_config();
+    let retry = ApiRetryConfig::current();
     for attempt in 0..=retry.max_retries {
         api_request_throttle()
             .wait_turn(request_meta.as_ref().map(|(_, url)| url.as_str()))
@@ -224,7 +198,7 @@ where
         }
 
         if should_retry_status(status) && attempt < retry.max_retries {
-            let delay = retry_delay_for_status(status, &headers, retry, attempt);
+            let delay = retry_delay_for_status(status, &headers, &retry, attempt);
             warn!(
                 attempt = attempt + 1,
                 max_retries = retry.max_retries,

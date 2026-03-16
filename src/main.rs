@@ -23,10 +23,10 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use ui::{ApiPanel, DashboardPanel, ToastViewport, TrackingPanels};
 use support::{
-    compiled_app_key, default_show_planning_workspace, default_theme_preference,
-    first_non_empty_env, mask_key, next_theme_preference, normalize_theme_preference,
-    now_unix_millis, now_unix_seconds, parse_csv_lower_set, parse_env_bool,
-    theme_preference_label,
+    AppRuntimeSettings, compiled_app_key, default_show_planning_workspace,
+    default_theme_preference, first_non_empty_env, mask_key, next_theme_preference,
+    normalize_theme_preference, now_unix_millis, now_unix_seconds, parse_csv_lower_set,
+    parse_env_bool, replace_runtime_settings, runtime_settings_snapshot, theme_preference_label,
 };
 pub use domain::{
     ArcData, Dashboard, HideoutLevel, HideoutModule, Item, ItemRequirement, NeedRow, Project,
@@ -211,6 +211,8 @@ struct PersistedTrackedState {
     tracked_quests: Vec<String>,
     tracked_hideout: Vec<TrackedHideout>,
     tracked_projects: Vec<TrackedProject>,
+    #[serde(default)]
+    settings: AppRuntimeSettings,
     #[serde(default = "default_theme_preference")]
     theme_preference: String,
     #[serde(default = "default_show_planning_workspace")]
@@ -264,8 +266,10 @@ fn App() -> Element {
     let initial_tracked_quests = persisted_state.tracked_quests.clone();
     let initial_tracked_hideout = persisted_state.tracked_hideout.clone();
     let initial_tracked_projects = persisted_state.tracked_projects.clone();
+    let initial_runtime_settings = persisted_state.settings.clone();
     let initial_theme_preference = normalize_theme_preference(&persisted_state.theme_preference);
     let initial_show_planning_workspace = persisted_state.show_planning_workspace;
+    replace_runtime_settings(initial_runtime_settings.clone());
 
     let default_app_key = first_non_empty_env(&["key", "ARC_APP_KEY"])
         .or_else(compiled_app_key)
@@ -285,6 +289,7 @@ fn App() -> Element {
     let tracked_quests = use_signal(move || initial_tracked_quests.clone());
     let tracked_hideout = use_signal(move || initial_tracked_hideout.clone());
     let tracked_projects = use_signal(move || initial_tracked_projects.clone());
+    let runtime_settings = use_signal(move || initial_runtime_settings.clone());
     let theme_preference = use_signal(move || initial_theme_preference.clone());
     let show_planning_workspace = use_signal(move || initial_show_planning_workspace);
     let mut dashboard_filter = use_signal(String::new);
@@ -427,6 +432,7 @@ fn App() -> Element {
         theme_value.clone()
     };
     let theme_button_text = format!("Theme: {}", theme_preference_label(&theme_value));
+    let settings_snapshot = runtime_settings.read().clone();
 
     let dashboard_query = dashboard_filter.read().trim().to_ascii_lowercase();
     let sell_rows_filtered: Vec<SellRow> = if dashboard_query.is_empty() {
@@ -1165,14 +1171,18 @@ fn App() -> Element {
         let tracked_quests = tracked_quests.clone();
         let tracked_hideout = tracked_hideout.clone();
         let tracked_projects = tracked_projects.clone();
+        let runtime_settings = runtime_settings.clone();
         let theme_preference = theme_preference.clone();
         let show_planning_workspace = show_planning_workspace.clone();
         use_effect(move || {
+            let settings_snapshot = runtime_settings.read().clone();
+            replace_runtime_settings(settings_snapshot.clone());
             let snapshot = PersistedTrackedState {
                 tracked_crafts: tracked_crafts.read().clone(),
                 tracked_quests: tracked_quests.read().clone(),
                 tracked_hideout: tracked_hideout.read().clone(),
                 tracked_projects: tracked_projects.read().clone(),
+                settings: settings_snapshot,
                 theme_preference: normalize_theme_preference(theme_preference.read().as_str()),
                 show_planning_workspace: *show_planning_workspace.read(),
                 saved_at_unix: now_unix_seconds(),
@@ -1206,6 +1216,92 @@ fn App() -> Element {
                     app_key_masked: app_key_masked.clone(),
                     user_key: user_key.read().clone(),
                     on_user_key_input: move |evt: FormEvent| user_key.set(evt.value()),
+                    api_min_interval_ms: settings_snapshot.api_min_interval_ms.to_string(),
+                    on_api_min_interval_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.api_min_interval_ms = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    api_max_retries: settings_snapshot.api_max_retries.to_string(),
+                    on_api_max_retries_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<usize>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.api_max_retries = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    api_retry_base_ms: settings_snapshot.api_retry_base_ms.to_string(),
+                    on_api_retry_base_ms_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.api_retry_base_ms = value;
+                                if next.api_retry_max_ms < value {
+                                    next.api_retry_max_ms = value;
+                                }
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    api_retry_max_ms: settings_snapshot.api_retry_max_ms.to_string(),
+                    on_api_retry_max_ms_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.api_retry_max_ms = value.max(next.api_retry_base_ms);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    static_cache_ttl_seconds: settings_snapshot.static_cache_ttl_seconds.to_string(),
+                    on_static_cache_ttl_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.static_cache_ttl_seconds = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    startup_user_cache_ttl_seconds: settings_snapshot
+                        .startup_user_cache_ttl_seconds
+                        .to_string(),
+                    on_startup_user_cache_ttl_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.startup_user_cache_ttl_seconds = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    image_prefetch_count: settings_snapshot.image_prefetch_count.to_string(),
+                    on_image_prefetch_count_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<usize>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.image_prefetch_count = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    on_reset_settings: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |_| runtime_settings.set(AppRuntimeSettings::from_env())
+                    },
                     theme_button_text: theme_button_text.clone(),
                     on_theme_toggle: {
                         let mut theme_preference = theme_preference;
@@ -1369,25 +1465,15 @@ fn enqueue_toast(mut toasts: Signal<Vec<Toast>>, kind: ToastKind, message: Strin
 }
 
 fn static_cache_ttl() -> Duration {
-    Duration::from_secs(
-        first_non_empty_env(&["ARC_STATIC_CACHE_TTL_SECONDS"])
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_STATIC_CACHE_TTL_SECONDS),
-    )
+    Duration::from_secs(runtime_settings_snapshot().static_cache_ttl_seconds)
 }
 
 fn startup_user_cache_ttl() -> Duration {
-    Duration::from_secs(
-        first_non_empty_env(&["ARC_STARTUP_USER_CACHE_TTL_SECONDS"])
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_STARTUP_USER_CACHE_TTL_SECONDS),
-    )
+    Duration::from_secs(runtime_settings_snapshot().startup_user_cache_ttl_seconds)
 }
 
 fn image_prefetch_count() -> usize {
-    first_non_empty_env(&["ARC_IMAGE_PREFETCH_COUNT"])
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_IMAGE_PREFETCH_COUNT)
+    runtime_settings_snapshot().image_prefetch_count
 }
 
 const APP_CSS: &str = include_str!("../assets/tailwind.css");
