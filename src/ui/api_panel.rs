@@ -8,6 +8,21 @@ pub fn ApiPanel(
     app_key_masked: String,
     user_key: String,
     on_user_key_input: EventHandler<FormEvent>,
+    api_min_interval_ms: String,
+    on_api_min_interval_input: EventHandler<FormEvent>,
+    api_max_retries: String,
+    on_api_max_retries_input: EventHandler<FormEvent>,
+    api_retry_base_ms: String,
+    on_api_retry_base_ms_input: EventHandler<FormEvent>,
+    api_retry_max_ms: String,
+    on_api_retry_max_ms_input: EventHandler<FormEvent>,
+    static_cache_ttl_seconds: String,
+    on_static_cache_ttl_input: EventHandler<FormEvent>,
+    startup_user_cache_ttl_seconds: String,
+    on_startup_user_cache_ttl_input: EventHandler<FormEvent>,
+    image_prefetch_count: String,
+    on_image_prefetch_count_input: EventHandler<FormEvent>,
+    on_reset_settings: EventHandler<MouseEvent>,
     theme_button_text: String,
     on_theme_toggle: EventHandler<MouseEvent>,
     planning_button_text: String,
@@ -77,6 +92,85 @@ pub fn ApiPanel(
                             placeholder: "arc_u1_your_user_key",
                             "aria-label": "User API key",
                             oninput: move |evt| on_user_key_input.call(evt),
+                        }
+                    }
+                    div { class: "settings-grid",
+                        div { class: "settings-field",
+                            label { class: "field-label", "API min interval (ms)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "100",
+                                value: "{api_min_interval_ms}",
+                                oninput: move |evt| on_api_min_interval_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "API max retries" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "1",
+                                value: "{api_max_retries}",
+                                oninput: move |evt| on_api_max_retries_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Retry base (ms)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "100",
+                                value: "{api_retry_base_ms}",
+                                oninput: move |evt| on_api_retry_base_ms_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Retry max (ms)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "100",
+                                value: "{api_retry_max_ms}",
+                                oninput: move |evt| on_api_retry_max_ms_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Static cache TTL (s)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "60",
+                                value: "{static_cache_ttl_seconds}",
+                                oninput: move |evt| on_static_cache_ttl_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Startup cache TTL (s)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "60",
+                                value: "{startup_user_cache_ttl_seconds}",
+                                oninput: move |evt| on_startup_user_cache_ttl_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Image prefetch count" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "1",
+                                value: "{image_prefetch_count}",
+                                oninput: move |evt| on_image_prefetch_count_input.call(evt),
+                            }
+                        }
+                    }
+                    div { class: "actions settings-actions",
+                        button {
+                            class: "ghost",
+                            onclick: move |evt| on_reset_settings.call(evt),
+                            "Reset Runtime Settings"
                         }
                     }
                     p { class: "muted", "User keys grant access to personal data. Keep them user-provided and revocable." }

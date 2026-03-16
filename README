@@ -159,6 +159,8 @@ ARC_API_MIN_INTERVAL_MS=1000
 Set a higher value later if needed (for example `1500` or `2000`).  
 Set `0` to disable pacing.
 
+These values can also be edited in the app under `API + Sync -> Settings` and are persisted locally.
+
 Retry behavior for transient API failures is also configurable:
 
 ```env
@@ -201,6 +203,8 @@ The app now persists tracked goals and caches selected network data on disk to r
   - Prefetches a small number of uncached item images and stores them as data URIs
   - Default prefetch count: `12`
   - Override: `ARC_IMAGE_PREFETCH_COUNT=12`
+
+The cache TTLs, retry policy, API pacing, and image prefetch count can all be adjusted at runtime from the in-app `Settings` section. Saved UI settings are persisted in the tracked state file.
 
 ## UI modernization (current)
 

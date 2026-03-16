@@ -1,8 +1,115 @@
 use std::{
     collections::HashSet,
     env,
+    sync::{OnceLock, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AppRuntimeSettings {
+    #[serde(default = "default_api_min_interval_ms")]
+    pub api_min_interval_ms: u64,
+    #[serde(default = "default_api_max_retries")]
+    pub api_max_retries: usize,
+    #[serde(default = "default_api_retry_base_ms")]
+    pub api_retry_base_ms: u64,
+    #[serde(default = "default_api_retry_max_ms")]
+    pub api_retry_max_ms: u64,
+    #[serde(default = "default_static_cache_ttl_seconds")]
+    pub static_cache_ttl_seconds: u64,
+    #[serde(default = "default_startup_user_cache_ttl_seconds")]
+    pub startup_user_cache_ttl_seconds: u64,
+    #[serde(default = "default_image_prefetch_count")]
+    pub image_prefetch_count: usize,
+}
+
+impl Default for AppRuntimeSettings {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl AppRuntimeSettings {
+    pub(crate) fn from_env() -> Self {
+        let api_retry_base_ms = first_non_empty_env(&["ARC_API_RETRY_BASE_MS"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(crate::DEFAULT_API_RETRY_BASE_MS);
+        let api_retry_max_ms = first_non_empty_env(&["ARC_API_RETRY_MAX_MS"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(crate::DEFAULT_API_RETRY_MAX_MS)
+            .max(api_retry_base_ms);
+
+        Self {
+            api_min_interval_ms: first_non_empty_env(&["ARC_API_MIN_INTERVAL_MS"])
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(crate::DEFAULT_API_MIN_INTERVAL_MS),
+            api_max_retries: first_non_empty_env(&["ARC_API_MAX_RETRIES"])
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(crate::DEFAULT_API_MAX_RETRIES),
+            api_retry_base_ms,
+            api_retry_max_ms,
+            static_cache_ttl_seconds: first_non_empty_env(&["ARC_STATIC_CACHE_TTL_SECONDS"])
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(crate::DEFAULT_STATIC_CACHE_TTL_SECONDS),
+            startup_user_cache_ttl_seconds: first_non_empty_env(&[
+                "ARC_STARTUP_USER_CACHE_TTL_SECONDS",
+            ])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(crate::DEFAULT_STARTUP_USER_CACHE_TTL_SECONDS),
+            image_prefetch_count: first_non_empty_env(&["ARC_IMAGE_PREFETCH_COUNT"])
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(crate::DEFAULT_IMAGE_PREFETCH_COUNT),
+        }
+    }
+}
+
+fn runtime_settings_lock() -> &'static RwLock<AppRuntimeSettings> {
+    static RUNTIME_SETTINGS: OnceLock<RwLock<AppRuntimeSettings>> = OnceLock::new();
+    RUNTIME_SETTINGS.get_or_init(|| RwLock::new(AppRuntimeSettings::from_env()))
+}
+
+pub(crate) fn runtime_settings_snapshot() -> AppRuntimeSettings {
+    runtime_settings_lock()
+        .read()
+        .expect("runtime settings lock poisoned")
+        .clone()
+}
+
+pub(crate) fn replace_runtime_settings(settings: AppRuntimeSettings) {
+    *runtime_settings_lock()
+        .write()
+        .expect("runtime settings lock poisoned") = settings;
+}
+
+fn default_api_min_interval_ms() -> u64 {
+    crate::DEFAULT_API_MIN_INTERVAL_MS
+}
+
+fn default_api_max_retries() -> usize {
+    crate::DEFAULT_API_MAX_RETRIES
+}
+
+fn default_api_retry_base_ms() -> u64 {
+    crate::DEFAULT_API_RETRY_BASE_MS
+}
+
+fn default_api_retry_max_ms() -> u64 {
+    crate::DEFAULT_API_RETRY_MAX_MS
+}
+
+fn default_static_cache_ttl_seconds() -> u64 {
+    crate::DEFAULT_STATIC_CACHE_TTL_SECONDS
+}
+
+fn default_startup_user_cache_ttl_seconds() -> u64 {
+    crate::DEFAULT_STARTUP_USER_CACHE_TTL_SECONDS
+}
+
+fn default_image_prefetch_count() -> usize {
+    crate::DEFAULT_IMAGE_PREFETCH_COUNT
+}
 
 pub(crate) fn default_theme_preference() -> String {
     "system".to_string()

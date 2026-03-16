@@ -337,6 +337,16 @@ h3 {
   margin-bottom: var(--space-2);
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-2);
+}
+
+.settings-grid .settings-field {
+  margin-bottom: 0;
+}
+
 input,
 select,
 button {
