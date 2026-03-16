@@ -3738,14 +3738,8 @@ mod tests {
             ]),
             ..ArcData::default()
         };
-        let required = HashMap::from([
-            ("scrap".to_string(), 4),
-            ("battery".to_string(), 2),
-        ]);
-        let inventory = HashMap::from([
-            ("scrap".to_string(), 10),
-            ("battery".to_string(), 1),
-        ]);
+        let required = HashMap::from([("scrap".to_string(), 4), ("battery".to_string(), 2)]);
+        let inventory = HashMap::from([("scrap".to_string(), 10), ("battery".to_string(), 1)]);
         let loadout = HashMap::from([("scrap".to_string(), 1)]);
 
         let dashboard = build_dashboard(&data, &required, &inventory, &loadout, true);
