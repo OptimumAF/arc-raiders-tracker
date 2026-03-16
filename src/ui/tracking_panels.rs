@@ -63,9 +63,9 @@ pub fn TrackingPanels(
                     }
                     button {
                         onclick: {
-                            let craft_pick = craft_pick.clone();
-                            let craft_qty = craft_qty.clone();
-                            let mut tracked_crafts = tracked_crafts.clone();
+                            let craft_pick = craft_pick;
+                            let craft_qty = craft_qty;
+                            let mut tracked_crafts = tracked_crafts;
                             move |_| {
                                 let item_id = craft_pick.read().trim().to_string();
                                 if item_id.is_empty() {
@@ -105,7 +105,7 @@ pub fn TrackingPanels(
                                     button {
                                         class: "danger",
                                         onclick: {
-                                            let mut tracked_crafts = tracked_crafts.clone();
+                                            let mut tracked_crafts = tracked_crafts;
                                             move |_| {
                                                 tracked_crafts.write().remove(idx);
                                             }
@@ -135,8 +135,8 @@ pub fn TrackingPanels(
                     }
                     button {
                         onclick: {
-                            let quest_pick = quest_pick.clone();
-                            let mut tracked_quests = tracked_quests.clone();
+                            let quest_pick = quest_pick;
+                            let mut tracked_quests = tracked_quests;
                             move |_| {
                                 let quest_id = quest_pick.read().trim().to_string();
                                 if quest_id.is_empty() {
@@ -166,7 +166,7 @@ pub fn TrackingPanels(
                                     button {
                                         class: "danger",
                                         onclick: {
-                                            let mut tracked_quests = tracked_quests.clone();
+                                            let mut tracked_quests = tracked_quests;
                                             move |_| {
                                                 tracked_quests.write().remove(idx);
                                             }
@@ -205,9 +205,9 @@ pub fn TrackingPanels(
                     }
                     button {
                         onclick: {
-                            let hideout_pick = hideout_pick.clone();
-                            let hideout_level = hideout_level.clone();
-                            let mut tracked_hideout = tracked_hideout.clone();
+                            let hideout_pick = hideout_pick;
+                            let hideout_level = hideout_level;
+                            let mut tracked_hideout = tracked_hideout;
                             let data_snapshot = data_snapshot.clone();
                             move |_| {
                                 let module_id = hideout_pick.read().trim().to_string();
@@ -216,10 +216,10 @@ pub fn TrackingPanels(
                                 }
 
                                 let mut level = parse_u32_or_default(&hideout_level.read(), 1).max(1);
-                                if let Some(data) = data_snapshot.as_ref() {
-                                    if let Some(max_level) = module_max_level(data, &module_id) {
-                                        level = level.min(max_level.max(1));
-                                    }
+                                if let Some(data) = data_snapshot.as_ref()
+                                    && let Some(max_level) = module_max_level(data, &module_id)
+                                {
+                                    level = level.min(max_level.max(1));
                                 }
 
                                 let mut entries = tracked_hideout.write();
@@ -249,7 +249,7 @@ pub fn TrackingPanels(
                                     button {
                                         class: "danger",
                                         onclick: {
-                                            let mut tracked_hideout = tracked_hideout.clone();
+                                            let mut tracked_hideout = tracked_hideout;
                                             move |_| {
                                                 tracked_hideout.write().remove(idx);
                                             }
@@ -286,9 +286,9 @@ pub fn TrackingPanels(
                     }
                     button {
                         onclick: {
-                            let project_pick = project_pick.clone();
-                            let project_phase = project_phase.clone();
-                            let mut tracked_projects = tracked_projects.clone();
+                            let project_pick = project_pick;
+                            let project_phase = project_phase;
+                            let mut tracked_projects = tracked_projects;
                             let data_snapshot = data_snapshot.clone();
                             move |_| {
                                 let project_id = project_pick.read().trim().to_string();
@@ -297,10 +297,10 @@ pub fn TrackingPanels(
                                 }
 
                                 let mut phase = parse_u32_or_default(&project_phase.read(), 1).max(1);
-                                if let Some(data) = data_snapshot.as_ref() {
-                                    if let Some(max_phase) = project_max_phase(data, &project_id) {
-                                        phase = phase.min(max_phase.max(1));
-                                    }
+                                if let Some(data) = data_snapshot.as_ref()
+                                    && let Some(max_phase) = project_max_phase(data, &project_id)
+                                {
+                                    phase = phase.min(max_phase.max(1));
                                 }
 
                                 let mut entries = tracked_projects.write();
@@ -337,7 +337,7 @@ pub fn TrackingPanels(
                                     button {
                                         class: "danger",
                                         onclick: {
-                                            let mut tracked_projects = tracked_projects.clone();
+                                            let mut tracked_projects = tracked_projects;
                                             move |_| {
                                                 tracked_projects.write().remove(idx);
                                             }

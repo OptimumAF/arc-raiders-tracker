@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(clippy::clone_on_copy, clippy::collapsible_if)]
 
 use std::{
     collections::{HashMap, HashSet},
@@ -1455,32 +1456,7 @@ fn App() -> Element {
                     p { "Rust + Dioxus desktop tracker powered by ArcTracker.io" }
                 }
                 div { class: "header-controls",
-                    button {
-                        class: "ghost",
-                        onclick: {
-                            let mut theme_preference = theme_preference.clone();
-                            move |_| {
-                                let next = next_theme_preference(theme_preference.read().as_str());
-                                theme_preference.set(next);
-                            }
-                        },
-                        "{theme_button_text}"
-                    }
-                    button {
-                        class: "ghost",
-                        onclick: {
-                            let mut show_planning_workspace = show_planning_workspace.clone();
-                            move |_| {
-                                let current = *show_planning_workspace.read();
-                                show_planning_workspace.set(!current);
-                            }
-                        },
-                        if *show_planning_workspace.read() {
-                            "Hide Planning Workspace"
-                        } else {
-                            "Show Planning Workspace"
-                        }
-                    }
+                    p { class: "muted", "Dashboard-first workflow with sync + planning controls in Settings." }
                 }
             }
 
@@ -1489,6 +1465,26 @@ fn App() -> Element {
                     app_key_masked: app_key_masked.clone(),
                     user_key: user_key.read().clone(),
                     on_user_key_input: move |evt: FormEvent| user_key.set(evt.value()),
+                    theme_button_text: theme_button_text.clone(),
+                    on_theme_toggle: {
+                        let mut theme_preference = theme_preference;
+                        move |_| {
+                            let next = next_theme_preference(theme_preference.read().as_str());
+                            theme_preference.set(next);
+                        }
+                    },
+                    planning_button_text: if *show_planning_workspace.read() {
+                        "Hide Planning Workspace".to_string()
+                    } else {
+                        "Show Planning Workspace".to_string()
+                    },
+                    on_planning_toggle: {
+                        let mut show_planning_workspace = show_planning_workspace;
+                        move |_| {
+                            let current = *show_planning_workspace.read();
+                            show_planning_workspace.set(!current);
+                        }
+                    },
                     loading_data: *loading_data.read(),
                     scanning_inventory: *scanning_inventory.read(),
                     syncing_progress: *syncing_progress.read(),
@@ -2968,7 +2964,7 @@ fn aggregate_requirements(
             if let Some(recipe) = item.recipe.as_ref() {
                 if !recipe.is_empty() {
                     let output_qty = item.craft_quantity.unwrap_or(1).max(1);
-                    let runs = (craft.quantity + output_qty - 1) / output_qty;
+                    let runs = craft.quantity.div_ceil(output_qty);
 
                     for (ingredient_id, qty) in recipe {
                         add_requirement(&mut totals, ingredient_id, qty.saturating_mul(runs));
@@ -3616,3 +3612,152 @@ fn parse_csv_lower_set(raw: &str) -> HashSet<String> {
 }
 
 const APP_CSS: &str = include_str!("../assets/tailwind.css");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn localized_name(name: &str) -> HashMap<String, String> {
+        HashMap::from([("en".to_string(), name.to_string())])
+    }
+
+    fn item(id: &str, name: &str, value: u32) -> Item {
+        Item {
+            id: id.to_string(),
+            item_type: Some("Material".to_string()),
+            is_weapon: false,
+            name: localized_name(name),
+            recipe: None,
+            craft_quantity: None,
+            image_filename: None,
+            value: Some(value),
+        }
+    }
+
+    fn requirement(item_id: &str, quantity: u32) -> ItemRequirement {
+        ItemRequirement {
+            item_id: item_id.to_string(),
+            quantity,
+        }
+    }
+
+    #[test]
+    fn aggregate_requirements_expands_craft_recipe_by_output_quantity() {
+        let mut crafted = item("crafted", "Crafted Item", 100);
+        crafted.recipe = Some(HashMap::from([("wire".to_string(), 3)]));
+        crafted.craft_quantity = Some(2);
+
+        let data = ArcData {
+            items_by_id: HashMap::from([
+                ("crafted".to_string(), crafted),
+                ("wire".to_string(), item("wire", "Wire", 10)),
+            ]),
+            ..ArcData::default()
+        };
+
+        let totals = aggregate_requirements(
+            &data,
+            &[TrackedCraft {
+                item_id: "crafted".to_string(),
+                quantity: 5,
+            }],
+            &[],
+            &[],
+            &[],
+        );
+
+        assert_eq!(totals.get("wire"), Some(&9));
+        assert!(!totals.contains_key("crafted"));
+    }
+
+    #[test]
+    fn aggregate_requirements_accumulates_quest_hideout_and_project_needs() {
+        let data = ArcData {
+            items_by_id: HashMap::from([("scrap".to_string(), item("scrap", "Scrap", 5))]),
+            quests: vec![Quest {
+                id: "quest-1".to_string(),
+                name: localized_name("Quest 1"),
+                required_item_ids: vec![requirement("scrap", 2)],
+            }],
+            hideout_modules: vec![HideoutModule {
+                id: "hideout-1".to_string(),
+                name: localized_name("Hideout 1"),
+                max_level: 2,
+                levels: vec![
+                    HideoutLevel {
+                        level: 1,
+                        requirement_item_ids: vec![requirement("scrap", 1)],
+                    },
+                    HideoutLevel {
+                        level: 2,
+                        requirement_item_ids: vec![requirement("scrap", 4)],
+                    },
+                ],
+            }],
+            projects: vec![Project {
+                id: "project-1".to_string(),
+                name: localized_name("Project 1"),
+                phases: vec![
+                    ProjectPhase {
+                        phase: 1,
+                        requirement_item_ids: vec![requirement("scrap", 3)],
+                    },
+                    ProjectPhase {
+                        phase: 2,
+                        requirement_item_ids: vec![requirement("scrap", 6)],
+                    },
+                ],
+            }],
+            ..ArcData::default()
+        };
+
+        let totals = aggregate_requirements(
+            &data,
+            &[],
+            &["quest-1".to_string()],
+            &[TrackedHideout {
+                module_id: "hideout-1".to_string(),
+                target_level: 2,
+            }],
+            &[TrackedProject {
+                project_id: "project-1".to_string(),
+                start_phase: 2,
+                target_phase: 2,
+            }],
+        );
+
+        assert_eq!(totals.get("scrap"), Some(&13));
+    }
+
+    #[test]
+    fn build_dashboard_respects_keep_targets_and_sell_suggestions() {
+        let data = ArcData {
+            items_by_id: HashMap::from([
+                ("scrap".to_string(), item("scrap", "Scrap", 5)),
+                ("battery".to_string(), item("battery", "Battery", 20)),
+            ]),
+            ..ArcData::default()
+        };
+        let required = HashMap::from([
+            ("scrap".to_string(), 4),
+            ("battery".to_string(), 2),
+        ]);
+        let inventory = HashMap::from([
+            ("scrap".to_string(), 10),
+            ("battery".to_string(), 1),
+        ]);
+        let loadout = HashMap::from([("scrap".to_string(), 1)]);
+
+        let dashboard = build_dashboard(&data, &required, &inventory, &loadout, true);
+
+        assert_eq!(dashboard.needs.len(), 1);
+        assert_eq!(dashboard.needs[0].name, "Battery");
+        assert_eq!(dashboard.needs[0].missing, 1);
+
+        assert_eq!(dashboard.keep.len(), 2);
+        assert_eq!(dashboard.sell.len(), 1);
+        assert_eq!(dashboard.sell[0].name, "Scrap");
+        assert_eq!(dashboard.sell[0].quantity, 5);
+        assert_eq!(dashboard.sell[0].total_value, 25);
+    }
+}

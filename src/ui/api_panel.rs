@@ -8,6 +8,10 @@ pub fn ApiPanel(
     app_key_masked: String,
     user_key: String,
     on_user_key_input: EventHandler<FormEvent>,
+    theme_button_text: String,
+    on_theme_toggle: EventHandler<MouseEvent>,
+    planning_button_text: String,
+    on_planning_toggle: EventHandler<MouseEvent>,
     loading_data: bool,
     scanning_inventory: bool,
     syncing_progress: bool,
@@ -52,6 +56,18 @@ pub fn ApiPanel(
             details { class: "settings-disclosure",
                 summary { class: "settings-summary", "Settings" }
                 div { class: "settings-body",
+                    div { class: "actions settings-actions",
+                        button {
+                            class: "ghost",
+                            onclick: move |evt| on_theme_toggle.call(evt),
+                            "{theme_button_text}"
+                        }
+                        button {
+                            class: "ghost",
+                            onclick: move |evt| on_planning_toggle.call(evt),
+                            "{planning_button_text}"
+                        }
+                    }
                     p { class: "muted", "App key from .env: {app_key_masked}" }
                     div {
                         class: "settings-field",

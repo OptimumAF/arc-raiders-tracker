@@ -205,7 +205,7 @@ The app now persists tracked goals and caches selected network data on disk to r
 ## UI modernization (current)
 
 - Theme system with design-token based colors
-- `System -> Dark -> Light` theme toggle in the header (persisted on disk)
+- `System -> Dark -> Light` theme toggle in Settings (persisted on disk)
 - OS dark-mode fallback through `prefers-color-scheme`
 - Reduced motion support through `prefers-reduced-motion`
 - Dashboard filter input shared across `Can Sell`, `Need To Find`, `Keep In Stash`, and `All Required Items`
@@ -235,6 +235,10 @@ The UI is now split into component files:
 - Use pull requests for all code changes.
 - CI runs `fmt`, `clippy`, and `cargo check` on PRs to `master`.
 - Dependabot is enabled for Rust crates and GitHub Actions updates.
+
+## Tests
+
+- Unit tests cover core requirement aggregation and dashboard sell/keep calculations.
 
 ## Tailwind-ready styling
 
