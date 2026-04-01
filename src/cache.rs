@@ -114,6 +114,24 @@ pub(crate) fn save_tracked_state(state: &crate::PersistedTrackedState) -> Result
     fs::write(&path, content).with_context(|| format!("failed to write '{}'", path.display()))
 }
 
+pub(crate) fn clear_cache_namespace(namespace: &str) -> Result<()> {
+    let path = cache_root_dir().join(namespace);
+    if path.exists() {
+        fs::remove_dir_all(&path)
+            .with_context(|| format!("failed to remove cache directory '{}'", path.display()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn clear_all_cache() -> Result<()> {
+    let root = cache_root_dir();
+    if root.exists() {
+        fs::remove_dir_all(&root)
+            .with_context(|| format!("failed to remove cache root '{}'", root.display()))?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn get_json_cached<T>(
     request: reqwest::RequestBuilder,
     namespace: &str,

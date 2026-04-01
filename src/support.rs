@@ -23,6 +23,10 @@ pub(crate) struct AppRuntimeSettings {
     pub startup_user_cache_ttl_seconds: u64,
     #[serde(default = "default_image_prefetch_count")]
     pub image_prefetch_count: usize,
+    #[serde(default = "default_sell_exclude_weapons")]
+    pub sell_exclude_weapons: bool,
+    #[serde(default = "default_sell_exclude_types")]
+    pub sell_exclude_types: HashSet<String>,
 }
 
 impl Default for AppRuntimeSettings {
@@ -61,6 +65,13 @@ impl AppRuntimeSettings {
             image_prefetch_count: first_non_empty_env(&["ARC_IMAGE_PREFETCH_COUNT"])
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(crate::DEFAULT_IMAGE_PREFETCH_COUNT),
+            sell_exclude_weapons: first_non_empty_env(&["ARC_SELL_EXCLUDE_WEAPONS"])
+                .and_then(|value| parse_env_bool(&value))
+                .unwrap_or(crate::DEFAULT_SELL_EXCLUDE_WEAPONS),
+            sell_exclude_types: first_non_empty_env(&["ARC_SELL_EXCLUDE_TYPES"])
+                .map(|raw| parse_csv_lower_set(&raw))
+                .filter(|set| !set.is_empty())
+                .unwrap_or_else(default_sell_exclude_types),
         }
     }
 }
@@ -109,6 +120,17 @@ fn default_startup_user_cache_ttl_seconds() -> u64 {
 
 fn default_image_prefetch_count() -> usize {
     crate::DEFAULT_IMAGE_PREFETCH_COUNT
+}
+
+fn default_sell_exclude_weapons() -> bool {
+    crate::DEFAULT_SELL_EXCLUDE_WEAPONS
+}
+
+fn default_sell_exclude_types() -> HashSet<String> {
+    crate::DEFAULT_SELL_EXCLUDE_TYPES
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect()
 }
 
 pub(crate) fn default_theme_preference() -> String {

@@ -22,7 +22,15 @@ pub fn ApiPanel(
     on_startup_user_cache_ttl_input: EventHandler<FormEvent>,
     image_prefetch_count: String,
     on_image_prefetch_count_input: EventHandler<FormEvent>,
+    sell_exclude_weapons: bool,
+    on_sell_exclude_weapons_toggle: EventHandler<FormEvent>,
+    sell_exclude_types: String,
+    on_sell_exclude_types_input: EventHandler<FormEvent>,
     on_reset_settings: EventHandler<MouseEvent>,
+    clearing_cache: bool,
+    on_clear_user_cache: EventHandler<MouseEvent>,
+    on_clear_image_cache: EventHandler<MouseEvent>,
+    on_clear_all_cache: EventHandler<MouseEvent>,
     theme_button_text: String,
     on_theme_toggle: EventHandler<MouseEvent>,
     planning_button_text: String,
@@ -165,12 +173,51 @@ pub fn ApiPanel(
                                 oninput: move |evt| on_image_prefetch_count_input.call(evt),
                             }
                         }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Exclude weapons from Can Sell" }
+                            label { class: "checkbox-row",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: sell_exclude_weapons,
+                                    onchange: move |evt| on_sell_exclude_weapons_toggle.call(evt),
+                                }
+                                span { "Hide weapons and gear-like items from sell suggestions" }
+                            }
+                        }
+                        div { class: "settings-field settings-field-wide",
+                            label { class: "field-label", "Excluded sell types (comma-separated)" }
+                            input {
+                                value: "{sell_exclude_types}",
+                                placeholder: "Augment, Modification, Ammunition, Quick Use, Shield, Key",
+                                oninput: move |evt| on_sell_exclude_types_input.call(evt),
+                            }
+                        }
                     }
                     div { class: "actions settings-actions",
                         button {
                             class: "ghost",
                             onclick: move |evt| on_reset_settings.call(evt),
                             "Reset Runtime Settings"
+                        }
+                    }
+                    div { class: "actions settings-actions",
+                        button {
+                            class: "ghost",
+                            disabled: clearing_cache,
+                            onclick: move |evt| on_clear_user_cache.call(evt),
+                            if clearing_cache { "Clearing..." } else { "Clear User Cache" }
+                        }
+                        button {
+                            class: "ghost",
+                            disabled: clearing_cache,
+                            onclick: move |evt| on_clear_image_cache.call(evt),
+                            if clearing_cache { "Clearing..." } else { "Clear Image Cache" }
+                        }
+                        button {
+                            class: "ghost danger",
+                            disabled: clearing_cache,
+                            onclick: move |evt| on_clear_all_cache.call(evt),
+                            if clearing_cache { "Clearing..." } else { "Clear All Cache" }
                         }
                     }
                     p { class: "muted", "User keys grant access to personal data. Keep them user-provided and revocable." }

@@ -347,6 +347,21 @@ h3 {
   margin-bottom: 0;
 }
 
+.settings-field-wide {
+  grid-column: 1 / -1;
+}
+
+.checkbox-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.checkbox-row input[type="checkbox"] {
+  min-width: auto;
+  margin-top: 3px;
+}
+
 input,
 select,
 button {
