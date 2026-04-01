@@ -2,8 +2,8 @@
 #![allow(clippy::clone_on_copy, clippy::collapsible_if)]
 
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, OnceLock},
+    collections::HashMap,
+    sync::Arc,
     time::Duration,
 };
 
@@ -26,7 +26,7 @@ use support::{
     AppRuntimeSettings, compiled_app_key, default_show_planning_workspace,
     default_theme_preference, first_non_empty_env, mask_key, next_theme_preference,
     normalize_theme_preference, now_unix_millis, now_unix_seconds, parse_csv_lower_set,
-    parse_env_bool, replace_runtime_settings, runtime_settings_snapshot, theme_preference_label,
+    replace_runtime_settings, runtime_settings_snapshot, theme_preference_label,
 };
 pub use domain::{
     ArcData, Dashboard, HideoutLevel, HideoutModule, Item, ItemRequirement, NeedRow, Project,
@@ -41,8 +41,9 @@ use api::{
     local_item_image_data_uri, run_api_diagnostics, sync_user_progress,
 };
 use cache::{
-    get_json_cached, load_tracked_state, read_cached_remote_image_data_uri, read_cache_typed,
-    save_tracked_state, short_hash, write_cache_typed, write_cached_remote_image,
+    clear_all_cache, clear_cache_namespace, get_json_cached, load_tracked_state,
+    read_cached_remote_image_data_uri, read_cache_typed, save_tracked_state, short_hash,
+    write_cache_typed, write_cached_remote_image,
 };
 use http::{
     extract_http_status_code_from_error, extract_request_id_from_error,
@@ -76,7 +77,6 @@ const CACHE_NAMESPACE_STATIC: &str = "static_api";
 const CACHE_NAMESPACE_USER: &str = "user_api";
 const CACHE_NAMESPACE_IMAGES: &str = "images";
 const CACHE_FILE_TRACKED_STATE: &str = "tracked_state.json";
-static SELL_FILTER_CONFIG: OnceLock<SellFilterConfig> = OnceLock::new();
 const COMPILED_APP_KEY: Option<&str> = option_env!("ARC_APP_KEY");
 
 fn main() {
@@ -220,45 +220,6 @@ struct PersistedTrackedState {
     saved_at_unix: u64,
 }
 
-#[derive(Debug)]
-struct SellFilterConfig {
-    exclude_weapons: bool,
-    excluded_types: HashSet<String>,
-}
-
-impl SellFilterConfig {
-    fn from_env() -> Self {
-        let exclude_weapons = first_non_empty_env(&["ARC_SELL_EXCLUDE_WEAPONS"])
-            .and_then(|value| parse_env_bool(&value))
-            .unwrap_or(DEFAULT_SELL_EXCLUDE_WEAPONS);
-
-        let excluded_types = first_non_empty_env(&["ARC_SELL_EXCLUDE_TYPES"])
-            .map(|raw| parse_csv_lower_set(&raw))
-            .filter(|set| !set.is_empty())
-            .unwrap_or_else(|| {
-                DEFAULT_SELL_EXCLUDE_TYPES
-                    .iter()
-                    .map(|value| value.to_ascii_lowercase())
-                    .collect()
-            });
-
-        info!(
-            exclude_weapons,
-            excluded_type_count = excluded_types.len(),
-            "sell_filter: configured can-sell exclusions"
-        );
-
-        Self {
-            exclude_weapons,
-            excluded_types,
-        }
-    }
-}
-
-fn sell_filter_config() -> &'static SellFilterConfig {
-    SELL_FILTER_CONFIG.get_or_init(SellFilterConfig::from_env)
-}
-
 #[component]
 fn App() -> Element {
     let persisted_state = load_tracked_state().unwrap_or_default();
@@ -309,6 +270,7 @@ fn App() -> Element {
     let requirements_data_ready = use_signal(|| false);
     let requirements_data_issue = use_signal(String::new);
     let diagnostics_running = use_signal(|| false);
+    let cache_action_running = use_signal(|| false);
     let diagnostics_rows = use_signal(Vec::<ApiDiagnosticRow>::new);
     let diagnostics_report = use_signal(String::new);
     let operation_progress = use_signal(|| Option::<OperationProgress>::None);
@@ -1298,9 +1260,139 @@ fn App() -> Element {
                             }
                         }
                     },
+                    sell_exclude_weapons: settings_snapshot.sell_exclude_weapons,
+                    on_sell_exclude_weapons_toggle: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            let checked = matches!(
+                                evt.value().to_ascii_lowercase().as_str(),
+                                "true" | "on" | "1" | "yes"
+                            );
+                            let mut next = runtime_settings.read().clone();
+                            next.sell_exclude_weapons = checked;
+                            runtime_settings.set(next);
+                        }
+                    },
+                    sell_exclude_types: {
+                        let mut values: Vec<_> =
+                            settings_snapshot.sell_exclude_types.iter().cloned().collect();
+                        values.sort();
+                        values.join(", ")
+                    },
+                    on_sell_exclude_types_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            let mut next = runtime_settings.read().clone();
+                            next.sell_exclude_types = parse_csv_lower_set(&evt.value());
+                            runtime_settings.set(next);
+                        }
+                    },
                     on_reset_settings: {
                         let mut runtime_settings = runtime_settings.clone();
                         move |_| runtime_settings.set(AppRuntimeSettings::from_env())
+                    },
+                    clearing_cache: *cache_action_running.read(),
+                    on_clear_user_cache: {
+                        let mut cache_action_running = cache_action_running.clone();
+                        let status_message = status_message.clone();
+                        let error_message = error_message.clone();
+                        let toasts = toasts.clone();
+                        move |_| {
+                            if *cache_action_running.read() {
+                                return;
+                            }
+                            cache_action_running.set(true);
+                            let mut cache_action_running = cache_action_running.clone();
+                            let mut status_message = status_message.clone();
+                            let mut error_message = error_message.clone();
+                            let toasts = toasts.clone();
+                            spawn(async move {
+                                match clear_cache_namespace(CACHE_NAMESPACE_USER) {
+                                    Ok(()) => {
+                                        status_message.set("Cleared user API cache.".to_string());
+                                        enqueue_toast(
+                                            toasts,
+                                            ToastKind::Success,
+                                            "Cleared user API cache.".to_string(),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        let message = format!("Failed to clear user cache: {err}");
+                                        error_message.set(message.clone());
+                                        enqueue_toast(toasts, ToastKind::Error, message);
+                                    }
+                                }
+                                cache_action_running.set(false);
+                            });
+                        }
+                    },
+                    on_clear_image_cache: {
+                        let mut cache_action_running = cache_action_running.clone();
+                        let status_message = status_message.clone();
+                        let error_message = error_message.clone();
+                        let toasts = toasts.clone();
+                        move |_| {
+                            if *cache_action_running.read() {
+                                return;
+                            }
+                            cache_action_running.set(true);
+                            let mut cache_action_running = cache_action_running.clone();
+                            let mut status_message = status_message.clone();
+                            let mut error_message = error_message.clone();
+                            let toasts = toasts.clone();
+                            spawn(async move {
+                                match clear_cache_namespace(CACHE_NAMESPACE_IMAGES) {
+                                    Ok(()) => {
+                                        status_message.set("Cleared image cache.".to_string());
+                                        enqueue_toast(
+                                            toasts,
+                                            ToastKind::Success,
+                                            "Cleared image cache.".to_string(),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        let message = format!("Failed to clear image cache: {err}");
+                                        error_message.set(message.clone());
+                                        enqueue_toast(toasts, ToastKind::Error, message);
+                                    }
+                                }
+                                cache_action_running.set(false);
+                            });
+                        }
+                    },
+                    on_clear_all_cache: {
+                        let mut cache_action_running = cache_action_running.clone();
+                        let status_message = status_message.clone();
+                        let error_message = error_message.clone();
+                        let toasts = toasts.clone();
+                        move |_| {
+                            if *cache_action_running.read() {
+                                return;
+                            }
+                            cache_action_running.set(true);
+                            let mut cache_action_running = cache_action_running.clone();
+                            let mut status_message = status_message.clone();
+                            let mut error_message = error_message.clone();
+                            let toasts = toasts.clone();
+                            spawn(async move {
+                                match clear_all_cache() {
+                                    Ok(()) => {
+                                        status_message.set("Cleared all cache files.".to_string());
+                                        enqueue_toast(
+                                            toasts,
+                                            ToastKind::Success,
+                                            "Cleared all cache files.".to_string(),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        let message = format!("Failed to clear all cache: {err}");
+                                        error_message.set(message.clone());
+                                        enqueue_toast(toasts, ToastKind::Error, message);
+                                    }
+                                }
+                                cache_action_running.set(false);
+                            });
+                        }
                     },
                     theme_button_text: theme_button_text.clone(),
                     on_theme_toggle: {
@@ -1393,7 +1485,7 @@ fn is_excluded_from_sell(data: &ArcData, item_id: &str) -> bool {
         return false;
     };
 
-    let config = sell_filter_config();
+    let config = runtime_settings_snapshot();
     let normalized_type = item
         .item_type
         .as_deref()
@@ -1401,7 +1493,7 @@ fn is_excluded_from_sell(data: &ArcData, item_id: &str) -> bool {
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase);
 
-    if config.exclude_weapons {
+    if config.sell_exclude_weapons {
         if item.is_weapon {
             return true;
         }
@@ -1414,7 +1506,7 @@ fn is_excluded_from_sell(data: &ArcData, item_id: &str) -> bool {
     }
 
     if let Some(item_type) = normalized_type.as_deref() {
-        return config.excluded_types.contains(item_type);
+        return config.sell_exclude_types.contains(item_type);
     }
 
     false
