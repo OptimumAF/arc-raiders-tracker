@@ -13,14 +13,13 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::{
-    ArcData, HideoutModule, Item, ItemsResponse, Project, ProjectsResponse, Quest,
-    QuestsResponse, TrackedHideout, TrackedProject, UserProfileInfo,
-    extract_http_status_code_from_error, extract_inventory_counts,
-    extract_known_ids, extract_progress_level_map, extract_request_id_from_error,
-    extract_request_id_from_payload, get_json, get_json_cached, has_next_page, localized_en,
-    merge_counts, parse_user_profile, read_cache_typed, read_cached_remote_image_data_uri,
-    short_hash, truncate_for_report, unwrap_data_ref, write_cache_typed,
-    write_cached_remote_image,
+    ArcData, HideoutModule, Item, ItemsResponse, Project, ProjectsResponse, Quest, QuestsResponse,
+    TrackedHideout, TrackedProject, UserProfileInfo, extract_http_status_code_from_error,
+    extract_inventory_counts, extract_known_ids, extract_progress_level_map,
+    extract_request_id_from_error, extract_request_id_from_payload, get_json, get_json_cached,
+    has_next_page, localized_en, merge_counts, parse_user_profile, read_cache_typed,
+    read_cached_remote_image_data_uri, short_hash, truncate_for_report, unwrap_data_ref,
+    write_cache_typed, write_cached_remote_image,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -364,11 +363,8 @@ pub(crate) async fn get_user_json_value(
     debug!(path = path_with_query, "get_user_json_value: request");
     let cache_key = format!("{}_{}", short_hash(user_key), short_hash(path_with_query));
     if let Some(ttl) = cache_ttl
-        && let Some(cached) = read_cache_typed::<Value>(
-            crate::CACHE_NAMESPACE_USER,
-            &cache_key,
-            Some(ttl),
-        )
+        && let Some(cached) =
+            read_cache_typed::<Value>(crate::CACHE_NAMESPACE_USER, &cache_key, Some(ttl))
     {
         debug!(path = path_with_query, "get_user_json_value: cache hit");
         return Ok(cached);
@@ -759,7 +755,11 @@ pub(crate) async fn sync_user_progress(
     if !project_progress.is_empty() {
         write_cache_typed(
             crate::CACHE_NAMESPACE_USER,
-            &format!("{}_{}", short_hash(user_key), short_hash("projects_progress")),
+            &format!(
+                "{}_{}",
+                short_hash(user_key),
+                short_hash("projects_progress")
+            ),
             &project_progress,
         );
     }

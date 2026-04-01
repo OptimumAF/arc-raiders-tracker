@@ -11,7 +11,9 @@ Desktop tracker for ARC Raiders inventory planning using ArcTracker API plus loc
 
 ## What it does
 
-- Scans stash inventory from ArcTracker (`/api/v2/user/stash`)
+- Imports stash inventory from screenshots and OCR as the primary scanner
+- Keeps the last imported inventory snapshot persisted locally between launches
+- Offers ArcTracker stash sync (`/api/v2/user/stash`) as a fallback-only inventory refresh
 - Tracks craft goals (uses item `recipe` data)
 - Tracks quest turn-in item goals
 - Tracks hideout upgrade requirements by target level
@@ -123,10 +125,36 @@ git push origin v0.1.0
 If both `key`/`ARC_APP_KEY` and `user_key`/`ARC_USER_KEY` are present at launch, the app now auto-runs:
 
 - Load static game data
-- Scan stash inventory
+- Keep the last imported local inventory snapshot
 - Auto Sync Progress (profile/loadout/quests/hideout/projects)
 
 If a user endpoint returns an error (for example temporary `500` from ArcTracker), existing tracked quest/hideout/project selections are preserved.
+
+## Screenshot inventory scanning
+
+The app now treats screenshot import as the primary inventory source because ArcTracker stash data can lag behind live in-game state.
+
+- Use `Import Inventory Screenshots` in `API + Sync`
+- Load static game data first so the app has the local item image templates
+- Import tightly cropped screenshots of the inventory grid
+- Optional OCR reads stack counts from the screenshot on Windows builds
+- The older `Sync Inventory via API (Fallback)` button remains available under `Settings`
+
+Screenshot scanner settings can be configured in-app and persisted locally:
+
+- grid columns
+- grid rows
+- slot padding percentage
+- OCR on/off
+
+Optional `.env` defaults:
+
+```env
+ARC_SCREENSHOT_GRID_COLUMNS=10
+ARC_SCREENSHOT_GRID_ROWS=7
+ARC_SCREENSHOT_SLOT_PADDING_PERCENT=12
+ARC_SCREENSHOT_QUANTITY_OCR_ENABLED=true
+```
 
 ## Debug logging
 
@@ -190,13 +218,15 @@ The app now persists tracked goals and caches selected network data on disk to r
   - Quests
   - Hideout targets
   - Project targets
+- Inventory snapshot persisted:
+  - Last imported screenshot/API inventory counts
 - Cache location:
   - Default: `cache/`
   - Override with `.env`: `ARC_CACHE_DIR=...`
 - Static API dataset cache (`/api/items`, `/api/quests`, `/api/hideout`, `/api/projects`):
   - Default TTL: `86400` seconds
   - Override: `ARC_STATIC_CACHE_TTL_SECONDS=86400`
-- Startup user-data cache for relaunches (stash/profile/loadout/quests/hideout/projects during startup auto-sync):
+- Startup user-data cache for relaunches (profile/loadout/quests/hideout/projects during startup auto-sync):
   - Default TTL: `300` seconds
   - Override: `ARC_STARTUP_USER_CACHE_TTL_SECONDS=300`
 - CDN item image cache:
@@ -204,7 +234,7 @@ The app now persists tracked goals and caches selected network data on disk to r
   - Default prefetch count: `12`
   - Override: `ARC_IMAGE_PREFETCH_COUNT=12`
 
-The cache TTLs, retry policy, API pacing, and image prefetch count can all be adjusted at runtime from the in-app `Settings` section. Saved UI settings are persisted in the tracked state file.
+The cache TTLs, retry policy, image prefetch count, screenshot scanner settings, and sell filters can all be adjusted at runtime from the in-app `Settings` section. Saved UI settings are persisted in the tracked state file.
 
 ## UI modernization (current)
 
@@ -262,9 +292,9 @@ Expected `Tab` flow order:
 1. Skip link (`Skip to dashboard`)
 2. Theme toggle
 3. Planning workspace toggle
-4. API key input
+4. User key input
 5. `Load / Refresh Game Data`
-6. `Scan Inventory`
+6. `Import Inventory Screenshots`
 7. `Auto Sync Progress`
 8. `Run API Diagnostics`
 9. Dashboard filter input

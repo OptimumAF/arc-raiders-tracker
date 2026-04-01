@@ -1,51 +1,35 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(clippy::clone_on_copy, clippy::collapsible_if)]
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-mod ui;
 mod api;
 mod cache;
 mod domain;
 mod http;
 mod parsing;
+mod scanner;
 mod support;
+mod ui;
 
+use api::{
+    ApiDiagnosticRow, build_api_diagnostics_report, fetch_stash_inventory, fetch_static_data,
+    image_mime_type, local_item_image_data_uri, run_api_diagnostics, sync_user_progress,
+};
+use cache::{
+    clear_all_cache, clear_cache_namespace, get_json_cached, load_tracked_state, read_cache_typed,
+    read_cached_remote_image_data_uri, save_tracked_state, short_hash, write_cache_typed,
+    write_cached_remote_image,
+};
 use dioxus::desktop::{Config as DesktopConfig, WindowBuilder, tao::window::Icon};
 use dioxus::prelude::*;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
-use ui::{ApiPanel, DashboardPanel, ToastViewport, TrackingPanels};
-use support::{
-    AppRuntimeSettings, compiled_app_key, default_show_planning_workspace,
-    default_theme_preference, first_non_empty_env, mask_key, next_theme_preference,
-    normalize_theme_preference, now_unix_millis, now_unix_seconds, parse_csv_lower_set,
-    replace_runtime_settings, runtime_settings_snapshot, theme_preference_label,
-};
 pub use domain::{
     ArcData, Dashboard, HideoutLevel, HideoutModule, Item, ItemRequirement, NeedRow, Project,
     ProjectPhase, Quest, SellRow, TrackedCraft, TrackedHideout, TrackedProject,
-    aggregate_requirements, build_dashboard, hideout_name, item_name, localized_en,
-    merge_counts, module_max_level, parse_u32_or_default, project_max_phase, project_name,
-    quest_name,
+    aggregate_requirements, build_dashboard, hideout_name, item_name, localized_en, merge_counts,
+    module_max_level, parse_u32_or_default, project_max_phase, project_name, quest_name,
 };
-use api::{
-    ApiDiagnosticRow, build_api_diagnostics_report, fetch_stash_inventory,
-    fetch_stash_inventory_with_cache, fetch_static_data, image_mime_type,
-    local_item_image_data_uri, run_api_diagnostics, sync_user_progress,
-};
-use cache::{
-    clear_all_cache, clear_cache_namespace, get_json_cached, load_tracked_state,
-    read_cached_remote_image_data_uri, read_cache_typed, save_tracked_state, short_hash,
-    write_cache_typed, write_cached_remote_image,
-};
-use http::{
+pub(crate) use http::{
     extract_http_status_code_from_error, extract_request_id_from_error,
     extract_request_id_from_payload, get_json, truncate_for_report,
 };
@@ -54,6 +38,18 @@ pub use parsing::{
     extract_inventory_counts, extract_known_ids, extract_progress_level_map, has_next_page,
     parse_user_profile, unwrap_data_ref,
 };
+use reqwest::Client;
+use scanner::{scan_inventory_screenshots, select_inventory_screenshot_files};
+use serde::{Deserialize, Serialize};
+use support::{
+    AppRuntimeSettings, compiled_app_key, default_show_planning_workspace,
+    default_theme_preference, first_non_empty_env, mask_key, next_theme_preference,
+    normalize_theme_preference, now_unix_millis, now_unix_seconds, parse_csv_lower_set,
+    replace_runtime_settings, runtime_settings_snapshot, theme_preference_label,
+};
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
+use ui::{ApiPanel, DashboardPanel, ToastViewport, TrackingPanels};
 
 const API_BASE: &str = "https://arctracker.io";
 const LOCAL_DATA_DEFAULT_DIR: &str = "vendor/arcraiders-data";
@@ -207,6 +203,8 @@ struct Toast {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PersistedTrackedState {
+    #[serde(default)]
+    inventory_counts: HashMap<String, u32>,
     tracked_crafts: Vec<TrackedCraft>,
     tracked_quests: Vec<String>,
     tracked_hideout: Vec<TrackedHideout>,
@@ -227,6 +225,7 @@ fn App() -> Element {
     let initial_tracked_quests = persisted_state.tracked_quests.clone();
     let initial_tracked_hideout = persisted_state.tracked_hideout.clone();
     let initial_tracked_projects = persisted_state.tracked_projects.clone();
+    let initial_inventory_counts = persisted_state.inventory_counts.clone();
     let initial_runtime_settings = persisted_state.settings.clone();
     let initial_theme_preference = normalize_theme_preference(&persisted_state.theme_preference);
     let initial_show_planning_workspace = persisted_state.show_planning_workspace;
@@ -243,7 +242,7 @@ fn App() -> Element {
     let profile_info = use_signal(|| Option::<UserProfileInfo>::None);
 
     let static_data = use_signal::<Option<Arc<ArcData>>>(|| None);
-    let inventory_counts = use_signal(HashMap::<String, u32>::new);
+    let inventory_counts = use_signal(move || initial_inventory_counts.clone());
     let loadout_counts = use_signal(HashMap::<String, u32>::new);
 
     let tracked_crafts = use_signal(move || initial_tracked_crafts.clone());
@@ -519,6 +518,138 @@ fn App() -> Element {
     };
 
     let scan_inventory_action = {
+        let static_data = static_data.clone();
+        let inventory_counts = inventory_counts.clone();
+        let mut scanning_inventory = scanning_inventory.clone();
+        let mut status_message = status_message.clone();
+        let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
+        move |_| {
+            if *scanning_inventory.read() {
+                return;
+            }
+
+            let data = match static_data.read().as_ref() {
+                Some(data) => Arc::clone(data),
+                None => {
+                    let message = "Load static game data first, then import inventory screenshots."
+                        .to_string();
+                    error_message.set(message.clone());
+                    enqueue_toast(toasts.clone(), ToastKind::Error, message);
+                    return;
+                }
+            };
+
+            let Some(selected_paths) =
+                select_inventory_screenshot_files().filter(|paths| !paths.is_empty())
+            else {
+                return;
+            };
+
+            scanning_inventory.set(true);
+            error_message.set(String::new());
+            status_message.set("Importing inventory from screenshots...".to_string());
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                "Importing inventory screenshots...".to_string(),
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "Importing inventory".to_string(),
+                detail: "Matching slot icons and reading stack counts".to_string(),
+                current: 0,
+                total: 1,
+                indeterminate: true,
+            }));
+
+            let mut inventory_counts = inventory_counts.clone();
+            let mut scanning_inventory = scanning_inventory.clone();
+            let mut status_message = status_message.clone();
+            let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
+
+            spawn(async move {
+                let screenshot_count = selected_paths.len();
+                info!(
+                    screenshots = screenshot_count,
+                    "scan_inventory_action: importing inventory screenshots"
+                );
+                match tokio::task::spawn_blocking(move || {
+                    scan_inventory_screenshots(data.as_ref(), &selected_paths)
+                })
+                .await
+                {
+                    Ok(Ok(scan)) => {
+                        let unique = scan.counts.len();
+                        let total: u32 = scan.counts.values().sum();
+                        let matched_slots = scan.matched_slots;
+                        let unmatched_slots = scan.unmatched_slots;
+                        let quantity_ocr_hits = scan.quantity_ocr_hits;
+                        let quantity_fallbacks = scan.quantity_fallbacks;
+                        let warnings = scan.warnings;
+                        inventory_counts.set(scan.counts);
+
+                        let mut summary = format!(
+                            "Screenshot import complete: {total} total items across {unique} unique item types from {screenshot_count} screenshot(s). Matched {matched_slots} slots, {unmatched_slots} unmatched."
+                        );
+                        if !warnings.is_empty() {
+                            summary.push_str(" Warnings: ");
+                            summary.push_str(&warnings.join(" | "));
+                        }
+                        status_message.set(summary);
+
+                        let toast_message = if warnings.is_empty() {
+                            format!(
+                                "Imported {unique} item types from screenshots. OCR quantities: {quantity_ocr_hits}, fallback stacks: {quantity_fallbacks}."
+                            )
+                        } else {
+                            format!(
+                                "Imported screenshots with {} warning(s). OCR quantities: {quantity_ocr_hits}, fallback stacks: {quantity_fallbacks}.",
+                                warnings.len()
+                            )
+                        };
+                        enqueue_toast(
+                            toasts,
+                            if warnings.is_empty() {
+                                ToastKind::Success
+                            } else {
+                                ToastKind::Warning
+                            },
+                            toast_message,
+                        );
+                        info!(
+                            total,
+                            unique,
+                            matched_slots,
+                            unmatched_slots,
+                            quantity_ocr_hits,
+                            quantity_fallbacks,
+                            "scan_inventory_action: screenshot import complete"
+                        );
+                    }
+                    Ok(Err(err)) => {
+                        error!(error = %err, "scan_inventory_action: screenshot import failed");
+                        let message = format!("Screenshot inventory import failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                    }
+                    Err(err) => {
+                        error!(error = %err, "scan_inventory_action: screenshot worker failed");
+                        let message =
+                            format!("Screenshot inventory import failed to complete: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                    }
+                }
+                operation_progress.set(None);
+                scanning_inventory.set(false);
+            });
+        }
+    };
+
+    let scan_inventory_api_action = {
         let app_key = app_key.clone();
         let user_key = user_key.clone();
         let inventory_counts = inventory_counts.clone();
@@ -534,14 +665,14 @@ fn App() -> Element {
 
             scanning_inventory.set(true);
             error_message.set(String::new());
-            status_message.set("Scanning stash inventory...".to_string());
+            status_message.set("Syncing inventory via ArcTracker API fallback...".to_string());
             enqueue_toast(
                 toasts.clone(),
                 ToastKind::Info,
-                "Scanning stash inventory...".to_string(),
+                "Syncing inventory via ArcTracker API fallback...".to_string(),
             );
             operation_progress.set(Some(OperationProgress {
-                label: "Scanning inventory".to_string(),
+                label: "Syncing inventory fallback".to_string(),
                 detail: "Fetching stash pages from ArcTracker".to_string(),
                 current: 0,
                 total: 1,
@@ -559,7 +690,7 @@ fn App() -> Element {
             let toasts = toasts.clone();
 
             spawn(async move {
-                info!("scan_inventory_action: scanning stash");
+                info!("scan_inventory_api_action: scanning stash fallback");
                 let client = Client::new();
                 match fetch_stash_inventory(&client, &app_key_value, &user_key_value).await {
                     Ok(counts) => {
@@ -567,18 +698,21 @@ fn App() -> Element {
                         let total: u32 = counts.values().sum();
                         inventory_counts.set(counts);
                         status_message.set(format!(
-                            "Inventory scan complete: {total} total items across {unique} unique item types."
+                            "API fallback inventory sync complete: {total} total items across {unique} unique item types."
                         ));
                         enqueue_toast(
                             toasts,
                             ToastKind::Success,
-                            format!("Inventory scan complete: {unique} item types."),
+                            format!("API fallback inventory sync complete: {unique} item types."),
                         );
-                        info!(total, unique, "scan_inventory_action: stash scan complete");
+                        info!(
+                            total,
+                            unique, "scan_inventory_api_action: stash sync complete"
+                        );
                     }
                     Err(err) => {
-                        error!(error = %err, "scan_inventory_action: stash scan failed");
-                        let message = format!("Inventory scan failed: {err}");
+                        error!(error = %err, "scan_inventory_api_action: stash sync failed");
+                        let message = format!("API fallback inventory sync failed: {err}");
                         error_message.set(message.clone());
                         enqueue_toast(toasts, ToastKind::Error, message);
                     }
@@ -593,7 +727,6 @@ fn App() -> Element {
         let app_key = app_key.clone();
         let user_key = user_key.clone();
         let static_data = static_data.clone();
-        let inventory_counts = inventory_counts.clone();
         let loadout_counts = loadout_counts.clone();
         let tracked_quests = tracked_quests.clone();
         let tracked_hideout = tracked_hideout.clone();
@@ -623,7 +756,7 @@ fn App() -> Element {
             syncing_progress.set(true);
             error_message.set(String::new());
             status_message
-                .set("Syncing profile, stash, loadout, quests, hideout, projects...".to_string());
+                .set("Syncing profile, loadout, quests, hideout, projects...".to_string());
             enqueue_toast(
                 toasts.clone(),
                 ToastKind::Info,
@@ -640,7 +773,6 @@ fn App() -> Element {
             let app_key_value = app_key.read().clone();
             let user_key_value = user_key.read().clone();
 
-            let mut inventory_counts = inventory_counts.clone();
             let mut loadout_counts = loadout_counts.clone();
             let mut tracked_quests = tracked_quests.clone();
             let mut tracked_hideout = tracked_hideout.clone();
@@ -655,22 +787,19 @@ fn App() -> Element {
             let toasts = toasts.clone();
 
             spawn(async move {
-                info!("auto_sync_action: syncing profile/stash/loadout/quests/hideout/projects");
+                info!("auto_sync_action: syncing profile/loadout/quests/hideout/projects");
                 let client = Client::new();
                 match sync_user_progress(
                     &client,
                     &app_key_value,
                     &user_key_value,
                     &data,
-                    true,
+                    false,
                     None,
                 )
                 .await
                 {
                     Ok(sync) => {
-                        if let Some(stash) = sync.stash_counts {
-                            inventory_counts.set(stash);
-                        }
                         let mut loadout_total = loadout_counts.read().len();
                         if let Some(loadout) = sync.loadout_counts {
                             loadout_total = loadout.len();
@@ -903,7 +1032,6 @@ fn App() -> Element {
         let requirements_data_ready = requirements_data_ready.clone();
         let requirements_data_issue = requirements_data_issue.clone();
         let loading_data = loading_data.clone();
-        let scanning_inventory = scanning_inventory.clone();
         let syncing_progress = syncing_progress.clone();
         let mut startup_sync_started = startup_sync_started.clone();
         let status_message = status_message.clone();
@@ -924,7 +1052,6 @@ fn App() -> Element {
             startup_sync_started.set(true);
 
             let mut static_data = static_data.clone();
-            let mut inventory_counts = inventory_counts.clone();
             let mut loadout_counts = loadout_counts.clone();
             let mut tracked_quests = tracked_quests.clone();
             let mut tracked_hideout = tracked_hideout.clone();
@@ -933,19 +1060,18 @@ fn App() -> Element {
             let mut requirements_data_ready = requirements_data_ready.clone();
             let mut requirements_data_issue = requirements_data_issue.clone();
             let mut loading_data = loading_data.clone();
-            let mut scanning_inventory = scanning_inventory.clone();
             let mut syncing_progress = syncing_progress.clone();
             let mut status_message = status_message.clone();
             let mut error_message = error_message.clone();
             let mut operation_progress = operation_progress.clone();
             let toasts = toasts.clone();
+            let inventory_counts = inventory_counts.clone();
 
             spawn(async move {
-                info!("startup_sync: starting automatic startup load/scan/sync");
+                info!("startup_sync: starting automatic startup load/sync");
                 let client = Client::new();
 
                 loading_data.set(true);
-                scanning_inventory.set(true);
                 syncing_progress.set(true);
                 error_message.set(String::new());
                 status_message.set("Startup sync: loading static data...".to_string());
@@ -953,7 +1079,7 @@ fn App() -> Element {
                     label: "Startup sync".to_string(),
                     detail: "Loading static game data".to_string(),
                     current: 0,
-                    total: 3,
+                    total: 2,
                     indeterminate: false,
                 }));
 
@@ -966,7 +1092,6 @@ fn App() -> Element {
                         enqueue_toast(toasts, ToastKind::Error, message);
                         operation_progress.set(None);
                         loading_data.set(false);
-                        scanning_inventory.set(false);
                         syncing_progress.set(false);
                         return;
                     }
@@ -974,37 +1099,16 @@ fn App() -> Element {
 
                 let data_arc = Arc::new(data);
                 static_data.set(Some(Arc::clone(&data_arc)));
-                operation_progress.set(Some(OperationProgress {
-                    label: "Startup sync".to_string(),
-                    detail: "Scanning stash inventory".to_string(),
-                    current: 1,
-                    total: 3,
-                    indeterminate: false,
-                }));
-
-                status_message.set("Startup sync: scanning stash inventory...".to_string());
                 let mut startup_warnings = Vec::new();
-                match fetch_stash_inventory_with_cache(
-                    &client,
-                    &app_key_value,
-                    &user_key_value,
-                    Some(startup_user_cache_ttl()),
-                )
-                .await
-                {
-                    Ok(counts) => inventory_counts.set(counts),
-                    Err(err) => {
-                        warn!(error = %err, "startup_sync: stash scan warning");
-                        startup_warnings.push(format!("startup/stash: {err}"));
-                    }
-                }
-
-                status_message.set("Startup sync: syncing profile and progress...".to_string());
+                status_message.set(
+                    "Startup sync: syncing profile and progress while keeping the last imported inventory snapshot..."
+                        .to_string(),
+                );
                 operation_progress.set(Some(OperationProgress {
                     label: "Startup sync".to_string(),
                     detail: "Syncing profile and progression".to_string(),
-                    current: 2,
-                    total: 3,
+                    current: 1,
+                    total: 2,
                     indeterminate: false,
                 }));
                 match sync_user_progress(
@@ -1018,10 +1122,7 @@ fn App() -> Element {
                 .await
                 {
                     Ok(sync) => {
-                        if let Some(stash) = sync.stash_counts {
-                            inventory_counts.set(stash);
-                        }
-
+                        let inventory_item_types = inventory_counts.read().len();
                         let mut loadout_total = loadout_counts.read().len();
                         if let Some(loadout) = sync.loadout_counts {
                             loadout_total = loadout.len();
@@ -1073,8 +1174,12 @@ fn App() -> Element {
 
                         startup_warnings.extend(sync.warnings);
                         let mut summary = format!(
-                            "Startup sync complete: {} quests, {} hideout targets, {} projects, {} loadout item types.",
-                            quest_total, hideout_total, project_total, loadout_total
+                            "Startup sync complete: preserved {} imported inventory item types, {} quests, {} hideout targets, {} projects, {} loadout item types.",
+                            inventory_item_types,
+                            quest_total,
+                            hideout_total,
+                            project_total,
+                            loadout_total
                         );
                         if !startup_warnings.is_empty() {
                             summary.push_str(" Partial warnings: ");
@@ -1122,7 +1227,6 @@ fn App() -> Element {
 
                 operation_progress.set(None);
                 loading_data.set(false);
-                scanning_inventory.set(false);
                 syncing_progress.set(false);
             });
         });
@@ -1133,6 +1237,7 @@ fn App() -> Element {
         let tracked_quests = tracked_quests.clone();
         let tracked_hideout = tracked_hideout.clone();
         let tracked_projects = tracked_projects.clone();
+        let inventory_counts = inventory_counts.clone();
         let runtime_settings = runtime_settings.clone();
         let theme_preference = theme_preference.clone();
         let show_planning_workspace = show_planning_workspace.clone();
@@ -1140,6 +1245,7 @@ fn App() -> Element {
             let settings_snapshot = runtime_settings.read().clone();
             replace_runtime_settings(settings_snapshot.clone());
             let snapshot = PersistedTrackedState {
+                inventory_counts: inventory_counts.read().clone(),
                 tracked_crafts: tracked_crafts.read().clone(),
                 tracked_quests: tracked_quests.read().clone(),
                 tracked_hideout: tracked_hideout.read().clone(),
@@ -1258,6 +1364,55 @@ fn App() -> Element {
                                 next.image_prefetch_count = value;
                                 runtime_settings.set(next);
                             }
+                        }
+                    },
+                    screenshot_grid_columns: settings_snapshot.screenshot_grid_columns.to_string(),
+                    on_screenshot_grid_columns_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.screenshot_grid_columns = value.max(1);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    screenshot_grid_rows: settings_snapshot.screenshot_grid_rows.to_string(),
+                    on_screenshot_grid_rows_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.screenshot_grid_rows = value.max(1);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    screenshot_slot_padding_percent: settings_snapshot
+                        .screenshot_slot_padding_percent
+                        .to_string(),
+                    on_screenshot_slot_padding_percent_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.screenshot_slot_padding_percent = value.min(40);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    screenshot_quantity_ocr_enabled: settings_snapshot
+                        .screenshot_quantity_ocr_enabled,
+                    on_screenshot_quantity_ocr_enabled_toggle: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            let checked = matches!(
+                                evt.value().to_ascii_lowercase().as_str(),
+                                "true" | "on" | "1" | "yes"
+                            );
+                            let mut next = runtime_settings.read().clone();
+                            next.screenshot_quantity_ocr_enabled = checked;
+                            runtime_settings.set(next);
                         }
                     },
                     sell_exclude_weapons: settings_snapshot.sell_exclude_weapons,
@@ -1420,6 +1575,7 @@ fn App() -> Element {
                     diagnostics_running: *diagnostics_running.read(),
                     on_load_data: load_data_action,
                     on_scan_inventory: scan_inventory_action,
+                    on_scan_inventory_api: scan_inventory_api_action,
                     on_auto_sync: auto_sync_action,
                     on_run_diagnostics: api_diagnostics_action,
                     profile: profile_info.read().clone(),
@@ -1569,4 +1725,3 @@ fn image_prefetch_count() -> usize {
 }
 
 const APP_CSS: &str = include_str!("../assets/tailwind.css");
-

@@ -1,0 +1,512 @@
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use anyhow::{Context, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use image::{
+    DynamicImage, Rgba, RgbaImage,
+    imageops::{self, FilterType},
+};
+use serde::Deserialize;
+use tracing::{debug, info, warn};
+
+use crate::{ArcData, runtime_settings_snapshot};
+
+const FINGERPRINT_SIZE: u32 = 32;
+const TEMPLATE_BG: [u8; 3] = [28, 34, 42];
+const ABSOLUTE_MATCH_THRESHOLD: f32 = 0.080;
+const SOFT_MATCH_THRESHOLD: f32 = 0.110;
+const MATCH_RATIO_THRESHOLD: f32 = 1.08;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ScreenshotInventoryScanResult {
+    pub counts: HashMap<String, u32>,
+    pub files_scanned: usize,
+    pub matched_slots: usize,
+    pub unmatched_slots: usize,
+    pub quantity_ocr_hits: usize,
+    pub quantity_fallbacks: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ItemTemplate {
+    item_id: String,
+    fingerprint: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Rect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OcrWord {
+    text: String,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+pub(crate) fn select_inventory_screenshot_files() -> Option<Vec<PathBuf>> {
+    rfd::FileDialog::new()
+        .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+        .set_title("Select ARC Raiders inventory screenshots")
+        .pick_files()
+}
+
+pub(crate) fn scan_inventory_screenshots(
+    data: &ArcData,
+    paths: &[PathBuf],
+) -> Result<ScreenshotInventoryScanResult> {
+    if paths.is_empty() {
+        return Err(anyhow!("No screenshot files were selected."));
+    }
+
+    let images_dir = data.local_images_dir.as_ref().ok_or_else(|| {
+        anyhow!(
+            "Screenshot scanning requires local item images from vendor/arcraiders-data. Load static data from the local repo first."
+        )
+    })?;
+
+    let templates = load_item_templates(images_dir, data)?;
+    if templates.is_empty() {
+        return Err(anyhow!(
+            "No local item templates were found for screenshot matching."
+        ));
+    }
+
+    let settings = runtime_settings_snapshot();
+    let mut result = ScreenshotInventoryScanResult::default();
+
+    info!(
+        files = paths.len(),
+        templates = templates.len(),
+        columns = settings.screenshot_grid_columns,
+        rows = settings.screenshot_grid_rows,
+        "screenshot_scan: starting inventory screenshot scan"
+    );
+
+    for path in paths {
+        let image =
+            image::open(path).with_context(|| format!("failed to open '{}'", path.display()))?;
+        let ocr_words = if settings.screenshot_quantity_ocr_enabled {
+            match ocr_words_for_image(path) {
+                Ok(words) => words,
+                Err(err) => {
+                    warn!(path = %path.display(), error = %err, "screenshot_scan: OCR unavailable for screenshot");
+                    result.warnings.push(format!(
+                        "{}: quantity OCR unavailable ({err})",
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("screenshot")
+                    ));
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let file_result = scan_single_screenshot(&image, &templates, &ocr_words, &settings);
+        merge_counts(&mut result.counts, file_result.counts);
+        result.files_scanned += 1;
+        result.matched_slots += file_result.matched_slots;
+        result.unmatched_slots += file_result.unmatched_slots;
+        result.quantity_ocr_hits += file_result.quantity_ocr_hits;
+        result.quantity_fallbacks += file_result.quantity_fallbacks;
+        result
+            .warnings
+            .extend(file_result.warnings.into_iter().map(|warning| {
+                format!(
+                    "{}: {warning}",
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("screenshot")
+                )
+            }));
+    }
+
+    info!(
+        files_scanned = result.files_scanned,
+        matched_slots = result.matched_slots,
+        unmatched_slots = result.unmatched_slots,
+        quantity_ocr_hits = result.quantity_ocr_hits,
+        quantity_fallbacks = result.quantity_fallbacks,
+        unique_items = result.counts.len(),
+        "screenshot_scan: completed inventory screenshot scan"
+    );
+
+    Ok(result)
+}
+
+fn scan_single_screenshot(
+    image: &DynamicImage,
+    templates: &[ItemTemplate],
+    ocr_words: &[OcrWord],
+    settings: &crate::support::AppRuntimeSettings,
+) -> ScreenshotInventoryScanResult {
+    let mut result = ScreenshotInventoryScanResult::default();
+    let columns = settings.screenshot_grid_columns.max(1);
+    let rows = settings.screenshot_grid_rows.max(1);
+
+    for row in 0..rows {
+        for column in 0..columns {
+            let slot = slot_rect(image.width(), image.height(), columns, rows, column, row);
+            let icon_rect = icon_rect(slot, settings.screenshot_slot_padding_percent);
+            let icon_image = crop_image(image, icon_rect);
+
+            if looks_like_empty_slot(&icon_image) {
+                continue;
+            }
+
+            let Some((item_id, best_score, second_score)) = match_item(&icon_image, templates)
+            else {
+                result.unmatched_slots += 1;
+                continue;
+            };
+
+            let accepted = best_score <= ABSOLUTE_MATCH_THRESHOLD
+                || (best_score <= SOFT_MATCH_THRESHOLD
+                    && second_score / best_score.max(0.0001) >= MATCH_RATIO_THRESHOLD);
+
+            if !accepted {
+                debug!(
+                    item_id,
+                    best_score,
+                    second_score,
+                    row,
+                    column,
+                    "screenshot_scan: slot match below confidence threshold"
+                );
+                result.unmatched_slots += 1;
+                continue;
+            }
+
+            let quantity = quantity_for_slot(ocr_words, slot).unwrap_or(1);
+            if quantity > 1 {
+                result.quantity_ocr_hits += 1;
+            } else {
+                result.quantity_fallbacks += 1;
+            }
+
+            let entry = result.counts.entry(item_id.to_string()).or_insert(0);
+            *entry = entry.saturating_add(quantity);
+            result.matched_slots += 1;
+        }
+    }
+
+    if result.matched_slots == 0 {
+        result.warnings.push(
+            "No item slots were confidently matched. Check that screenshots are tightly cropped to the inventory grid and that grid rows/columns are configured correctly."
+                .to_string(),
+        );
+    } else if result.unmatched_slots > 0 {
+        result.warnings.push(format!(
+            "{} occupied slot(s) could not be matched confidently.",
+            result.unmatched_slots
+        ));
+    }
+
+    result
+}
+
+fn load_item_templates(images_dir: &Path, data: &ArcData) -> Result<Vec<ItemTemplate>> {
+    let mut templates = Vec::new();
+
+    for item_id in data.items_by_id.keys() {
+        let image_path = images_dir.join(format!("{item_id}.png"));
+        if !image_path.exists() {
+            continue;
+        }
+
+        let image = image::open(&image_path)
+            .with_context(|| format!("failed to open template '{}'", image_path.display()))?;
+        templates.push(ItemTemplate {
+            item_id: item_id.clone(),
+            fingerprint: image_fingerprint(&composite_template_image(&image)),
+        });
+    }
+
+    Ok(templates)
+}
+
+fn composite_template_image(image: &DynamicImage) -> RgbaImage {
+    let rgba = image.to_rgba8();
+    let mut composed = RgbaImage::new(rgba.width(), rgba.height());
+
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let alpha = pixel[3] as f32 / 255.0;
+        let out = if alpha <= 0.0 {
+            Rgba([TEMPLATE_BG[0], TEMPLATE_BG[1], TEMPLATE_BG[2], 255])
+        } else {
+            let blend = |channel: u8, background: u8| -> u8 {
+                ((channel as f32 * alpha) + (background as f32 * (1.0 - alpha))).round() as u8
+            };
+            Rgba([
+                blend(pixel[0], TEMPLATE_BG[0]),
+                blend(pixel[1], TEMPLATE_BG[1]),
+                blend(pixel[2], TEMPLATE_BG[2]),
+                255,
+            ])
+        };
+        composed.put_pixel(x, y, out);
+    }
+
+    composed
+}
+
+fn image_fingerprint(image: &RgbaImage) -> Vec<f32> {
+    let resized = imageops::resize(
+        image,
+        FINGERPRINT_SIZE,
+        FINGERPRINT_SIZE,
+        FilterType::Triangle,
+    );
+    let gray = DynamicImage::ImageRgba8(resized).grayscale().to_luma8();
+    let mut values: Vec<f32> = gray.pixels().map(|pixel| pixel[0] as f32 / 255.0).collect();
+
+    let mean = values.iter().copied().sum::<f32>() / values.len().max(1) as f32;
+    for value in &mut values {
+        *value -= mean;
+    }
+
+    values
+}
+
+fn looks_like_empty_slot(image: &RgbaImage) -> bool {
+    let gray = DynamicImage::ImageRgba8(image.clone())
+        .grayscale()
+        .to_luma8();
+    let values: Vec<f32> = gray.pixels().map(|pixel| pixel[0] as f32 / 255.0).collect();
+
+    let mean = values.iter().copied().sum::<f32>() / values.len().max(1) as f32;
+    let variance = values
+        .iter()
+        .map(|value| {
+            let diff = *value - mean;
+            diff * diff
+        })
+        .sum::<f32>()
+        / values.len().max(1) as f32;
+
+    mean < 0.14 && variance < 0.003
+}
+
+fn match_item<'a>(
+    slot_image: &RgbaImage,
+    templates: &'a [ItemTemplate],
+) -> Option<(&'a str, f32, f32)> {
+    let fingerprint = image_fingerprint(slot_image);
+    let mut best_item = None;
+    let mut best_score = f32::MAX;
+    let mut second_score = f32::MAX;
+
+    for template in templates {
+        let score = mean_squared_error(&fingerprint, &template.fingerprint);
+        if score < best_score {
+            second_score = best_score;
+            best_score = score;
+            best_item = Some(template.item_id.as_str());
+        } else if score < second_score {
+            second_score = score;
+        }
+    }
+
+    best_item.map(|item_id| (item_id, best_score, second_score))
+}
+
+fn mean_squared_error(a: &[f32], b: &[f32]) -> f32 {
+    let len = a.len().min(b.len()).max(1);
+    let sum = a
+        .iter()
+        .zip(b.iter())
+        .map(|(left, right)| {
+            let diff = left - right;
+            diff * diff
+        })
+        .sum::<f32>();
+    sum / len as f32
+}
+
+fn crop_image(image: &DynamicImage, rect: Rect) -> RgbaImage {
+    image
+        .crop_imm(rect.x, rect.y, rect.width.max(1), rect.height.max(1))
+        .to_rgba8()
+}
+
+fn slot_rect(
+    image_width: u32,
+    image_height: u32,
+    columns: u32,
+    rows: u32,
+    column: u32,
+    row: u32,
+) -> Rect {
+    let left = ((image_width as f32) * (column as f32 / columns as f32)).round() as u32;
+    let right = ((image_width as f32) * ((column + 1) as f32 / columns as f32)).round() as u32;
+    let top = ((image_height as f32) * (row as f32 / rows as f32)).round() as u32;
+    let bottom = ((image_height as f32) * ((row + 1) as f32 / rows as f32)).round() as u32;
+
+    Rect {
+        x: left.min(image_width.saturating_sub(1)),
+        y: top.min(image_height.saturating_sub(1)),
+        width: right.saturating_sub(left).max(1),
+        height: bottom.saturating_sub(top).max(1),
+    }
+}
+
+fn icon_rect(slot: Rect, padding_percent: u32) -> Rect {
+    let padding =
+        (slot.width.min(slot.height) as f32 * (padding_percent as f32 / 100.0)).round() as u32;
+    let bottom_trim = (slot.height as f32 * 0.18).round() as u32;
+    let x = slot.x.saturating_add(padding);
+    let y = slot.y.saturating_add(padding);
+    let width = slot.width.saturating_sub(padding.saturating_mul(2)).max(1);
+    let height = slot
+        .height
+        .saturating_sub(padding.saturating_mul(2))
+        .saturating_sub(bottom_trim)
+        .max(1);
+
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn quantity_for_slot(words: &[OcrWord], slot: Rect) -> Option<u32> {
+    let region_left = slot.x as f32 + slot.width as f32 * 0.52;
+    let region_top = slot.y as f32 + slot.height as f32 * 0.52;
+    let region_right = slot.x as f32 + slot.width as f32;
+    let region_bottom = slot.y as f32 + slot.height as f32;
+
+    let mut candidates: Vec<&OcrWord> = words
+        .iter()
+        .filter(|word| {
+            let center_x = word.left + word.width / 2.0;
+            let center_y = word.top + word.height / 2.0;
+            center_x >= region_left
+                && center_x <= region_right
+                && center_y >= region_top
+                && center_y <= region_bottom
+                && word.text.chars().any(|ch| ch.is_ascii_digit())
+        })
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        left.left
+            .partial_cmp(&right.left)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let digits: String = candidates
+        .iter()
+        .flat_map(|word| word.text.chars())
+        .filter(|ch| ch.is_ascii_digit())
+        .collect();
+
+    digits.parse::<u32>().ok().filter(|value| *value > 0)
+}
+
+#[cfg(windows)]
+fn ocr_words_for_image(path: &Path) -> Result<Vec<OcrWord>> {
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+[Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime] | Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+[Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
+
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+} | Select-Object -First 1)
+
+function AwaitWinRt($Operation) {
+    $resultType = $Operation.GetType().GenericTypeArguments[0]
+    $task = $asTask.MakeGenericMethod($resultType).Invoke($null, @($Operation))
+    $task.Wait(-1) | Out-Null
+    $task.Result
+}
+
+$path = $env:ARC_CLEANER_OCR_IMAGE
+$file = AwaitWinRt([Windows.Storage.StorageFile]::GetFileFromPathAsync($path))
+$stream = AwaitWinRt($file.OpenAsync([Windows.Storage.FileAccessMode]::Read))
+$decoder = AwaitWinRt([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream))
+$bitmap = AwaitWinRt($decoder.GetSoftwareBitmapAsync())
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) {
+    throw 'No Windows OCR language is available for the current user profile.'
+}
+$result = AwaitWinRt($engine.RecognizeAsync($bitmap))
+$words = foreach ($line in $result.Lines) {
+    foreach ($word in $line.Words) {
+        [pscustomobject]@{
+            text = $word.Text
+            left = $word.BoundingRect.X
+            top = $word.BoundingRect.Y
+            width = $word.BoundingRect.Width
+            height = $word.BoundingRect.Height
+        }
+    }
+}
+@($words) | ConvertTo-Json -Compress
+"#;
+
+    let mut utf16 = Vec::new();
+    for unit in script.encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-EncodedCommand")
+        .arg(BASE64.encode(utf16))
+        .env("ARC_CLEANER_OCR_IMAGE", path)
+        .output()
+        .context("failed to launch PowerShell for Windows OCR")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "Windows OCR failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str(&stdout).context("failed to parse Windows OCR JSON output")
+}
+
+#[cfg(not(windows))]
+fn ocr_words_for_image(_path: &Path) -> Result<Vec<OcrWord>> {
+    Err(anyhow!(
+        "Windows OCR is only available on Windows builds at the moment."
+    ))
+}
+
+fn merge_counts(base: &mut HashMap<String, u32>, other: HashMap<String, u32>) {
+    for (item_id, quantity) in other {
+        let entry = base.entry(item_id).or_insert(0);
+        *entry = entry.saturating_add(quantity);
+    }
+}

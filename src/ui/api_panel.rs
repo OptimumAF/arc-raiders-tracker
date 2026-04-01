@@ -22,6 +22,14 @@ pub fn ApiPanel(
     on_startup_user_cache_ttl_input: EventHandler<FormEvent>,
     image_prefetch_count: String,
     on_image_prefetch_count_input: EventHandler<FormEvent>,
+    screenshot_grid_columns: String,
+    on_screenshot_grid_columns_input: EventHandler<FormEvent>,
+    screenshot_grid_rows: String,
+    on_screenshot_grid_rows_input: EventHandler<FormEvent>,
+    screenshot_slot_padding_percent: String,
+    on_screenshot_slot_padding_percent_input: EventHandler<FormEvent>,
+    screenshot_quantity_ocr_enabled: bool,
+    on_screenshot_quantity_ocr_enabled_toggle: EventHandler<FormEvent>,
     sell_exclude_weapons: bool,
     on_sell_exclude_weapons_toggle: EventHandler<FormEvent>,
     sell_exclude_types: String,
@@ -41,6 +49,7 @@ pub fn ApiPanel(
     diagnostics_running: bool,
     on_load_data: EventHandler<MouseEvent>,
     on_scan_inventory: EventHandler<MouseEvent>,
+    on_scan_inventory_api: EventHandler<MouseEvent>,
     on_auto_sync: EventHandler<MouseEvent>,
     on_run_diagnostics: EventHandler<MouseEvent>,
     profile: Option<UserProfileInfo>,
@@ -63,7 +72,7 @@ pub fn ApiPanel(
                 button {
                     disabled: scanning_inventory,
                     onclick: move |evt| on_scan_inventory.call(evt),
-                    if scanning_inventory { "Scanning..." } else { "Scan Inventory" }
+                    if scanning_inventory { "Importing..." } else { "Import Inventory Screenshots" }
                 }
                 button {
                     disabled: syncing_progress,
@@ -102,6 +111,7 @@ pub fn ApiPanel(
                             oninput: move |evt| on_user_key_input.call(evt),
                         }
                     }
+                    p { class: "muted", "Screenshot import is the primary inventory scanner. Use the API stash sync below only as fallback when screenshots are unavailable." }
                     div { class: "settings-grid",
                         div { class: "settings-field",
                             label { class: "field-label", "API min interval (ms)" }
@@ -174,6 +184,48 @@ pub fn ApiPanel(
                             }
                         }
                         div { class: "settings-field",
+                            label { class: "field-label", "Screenshot grid columns" }
+                            input {
+                                r#type: "number",
+                                min: "1",
+                                step: "1",
+                                value: "{screenshot_grid_columns}",
+                                oninput: move |evt| on_screenshot_grid_columns_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Screenshot grid rows" }
+                            input {
+                                r#type: "number",
+                                min: "1",
+                                step: "1",
+                                value: "{screenshot_grid_rows}",
+                                oninput: move |evt| on_screenshot_grid_rows_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Screenshot slot padding (%)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                max: "40",
+                                step: "1",
+                                value: "{screenshot_slot_padding_percent}",
+                                oninput: move |evt| on_screenshot_slot_padding_percent_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "OCR screenshot quantities" }
+                            label { class: "checkbox-row",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: screenshot_quantity_ocr_enabled,
+                                    onchange: move |evt| on_screenshot_quantity_ocr_enabled_toggle.call(evt),
+                                }
+                                span { "Read stack counts from screenshots with OCR (Windows-only today)" }
+                            }
+                        }
+                        div { class: "settings-field",
                             label { class: "field-label", "Exclude weapons from Can Sell" }
                             label { class: "checkbox-row",
                                 input {
@@ -203,6 +255,18 @@ pub fn ApiPanel(
                     div { class: "actions settings-actions",
                         button {
                             class: "ghost",
+                            disabled: scanning_inventory,
+                            onclick: move |evt| on_scan_inventory_api.call(evt),
+                            if scanning_inventory {
+                                "Syncing API Inventory..."
+                            } else {
+                                "Sync Inventory via API (Fallback)"
+                            }
+                        }
+                    }
+                    div { class: "actions settings-actions",
+                        button {
+                            class: "ghost",
                             disabled: clearing_cache,
                             onclick: move |evt| on_clear_user_cache.call(evt),
                             if clearing_cache { "Clearing..." } else { "Clear User Cache" }
@@ -220,7 +284,7 @@ pub fn ApiPanel(
                             if clearing_cache { "Clearing..." } else { "Clear All Cache" }
                         }
                     }
-                    p { class: "muted", "User keys grant access to personal data. Keep them user-provided and revocable." }
+                    p { class: "muted", "For best results, import tightly cropped screenshots of the stash grid. User keys grant access to personal data. Keep them user-provided and revocable." }
                 }
             }
             if let Some(progress) = progress.as_ref() {

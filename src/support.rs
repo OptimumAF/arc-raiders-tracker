@@ -23,6 +23,14 @@ pub(crate) struct AppRuntimeSettings {
     pub startup_user_cache_ttl_seconds: u64,
     #[serde(default = "default_image_prefetch_count")]
     pub image_prefetch_count: usize,
+    #[serde(default = "default_screenshot_grid_columns")]
+    pub screenshot_grid_columns: u32,
+    #[serde(default = "default_screenshot_grid_rows")]
+    pub screenshot_grid_rows: u32,
+    #[serde(default = "default_screenshot_slot_padding_percent")]
+    pub screenshot_slot_padding_percent: u32,
+    #[serde(default = "default_screenshot_quantity_ocr_enabled")]
+    pub screenshot_quantity_ocr_enabled: bool,
     #[serde(default = "default_sell_exclude_weapons")]
     pub sell_exclude_weapons: bool,
     #[serde(default = "default_sell_exclude_types")]
@@ -65,6 +73,22 @@ impl AppRuntimeSettings {
             image_prefetch_count: first_non_empty_env(&["ARC_IMAGE_PREFETCH_COUNT"])
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(crate::DEFAULT_IMAGE_PREFETCH_COUNT),
+            screenshot_grid_columns: first_non_empty_env(&["ARC_SCREENSHOT_GRID_COLUMNS"])
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(default_screenshot_grid_columns()),
+            screenshot_grid_rows: first_non_empty_env(&["ARC_SCREENSHOT_GRID_ROWS"])
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(default_screenshot_grid_rows()),
+            screenshot_slot_padding_percent: first_non_empty_env(&[
+                "ARC_SCREENSHOT_SLOT_PADDING_PERCENT",
+            ])
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(default_screenshot_slot_padding_percent()),
+            screenshot_quantity_ocr_enabled: first_non_empty_env(&[
+                "ARC_SCREENSHOT_QUANTITY_OCR_ENABLED",
+            ])
+            .and_then(|value| parse_env_bool(&value))
+            .unwrap_or(default_screenshot_quantity_ocr_enabled()),
             sell_exclude_weapons: first_non_empty_env(&["ARC_SELL_EXCLUDE_WEAPONS"])
                 .and_then(|value| parse_env_bool(&value))
                 .unwrap_or(crate::DEFAULT_SELL_EXCLUDE_WEAPONS),
@@ -120,6 +144,22 @@ fn default_startup_user_cache_ttl_seconds() -> u64 {
 
 fn default_image_prefetch_count() -> usize {
     crate::DEFAULT_IMAGE_PREFETCH_COUNT
+}
+
+fn default_screenshot_grid_columns() -> u32 {
+    10
+}
+
+fn default_screenshot_grid_rows() -> u32 {
+    7
+}
+
+fn default_screenshot_slot_padding_percent() -> u32 {
+    12
+}
+
+fn default_screenshot_quantity_ocr_enabled() -> bool {
+    true
 }
 
 fn default_sell_exclude_weapons() -> bool {
