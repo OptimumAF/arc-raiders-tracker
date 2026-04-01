@@ -23,6 +23,8 @@ pub(crate) struct AppRuntimeSettings {
     pub startup_user_cache_ttl_seconds: u64,
     #[serde(default = "default_image_prefetch_count")]
     pub image_prefetch_count: usize,
+    #[serde(default = "default_screenshot_capture_delay_ms")]
+    pub screenshot_capture_delay_ms: u64,
     #[serde(default = "default_screenshot_grid_columns")]
     pub screenshot_grid_columns: u32,
     #[serde(default = "default_screenshot_grid_rows")]
@@ -73,6 +75,9 @@ impl AppRuntimeSettings {
             image_prefetch_count: first_non_empty_env(&["ARC_IMAGE_PREFETCH_COUNT"])
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(crate::DEFAULT_IMAGE_PREFETCH_COUNT),
+            screenshot_capture_delay_ms: first_non_empty_env(&["ARC_SCREENSHOT_CAPTURE_DELAY_MS"])
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(default_screenshot_capture_delay_ms()),
             screenshot_grid_columns: first_non_empty_env(&["ARC_SCREENSHOT_GRID_COLUMNS"])
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(default_screenshot_grid_columns()),
@@ -144,6 +149,10 @@ fn default_startup_user_cache_ttl_seconds() -> u64 {
 
 fn default_image_prefetch_count() -> usize {
     crate::DEFAULT_IMAGE_PREFETCH_COUNT
+}
+
+fn default_screenshot_capture_delay_ms() -> u64 {
+    2500
 }
 
 fn default_screenshot_grid_columns() -> u32 {

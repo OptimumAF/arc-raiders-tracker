@@ -132,16 +132,19 @@ If a user endpoint returns an error (for example temporary `500` from ArcTracker
 
 ## Screenshot inventory scanning
 
-The app now treats screenshot import as the primary inventory source because ArcTracker stash data can lag behind live in-game state.
+The app now treats on-screen capture as the primary inventory source because ArcTracker stash data can lag behind live in-game state.
 
-- Use `Import Inventory Screenshots` in `API + Sync`
+- Use `Capture Inventory From Screen` in `API + Sync`
+- After clicking capture, switch to the game window during the countdown
 - Load static game data first so the app has the local item image templates
-- Import tightly cropped screenshots of the inventory grid
+- Keep the inventory grid tightly framed on screen for best matching results
 - Optional OCR reads stack counts from the screenshot on Windows builds
-- The older `Sync Inventory via API (Fallback)` button remains available under `Settings`
+- `Import Inventory Screenshots (Manual)` remains available under `Settings`
+- `Sync Inventory via API (Fallback)` also remains available under `Settings`
 
 Screenshot scanner settings can be configured in-app and persisted locally:
 
+- capture delay
 - grid columns
 - grid rows
 - slot padding percentage
@@ -150,6 +153,7 @@ Screenshot scanner settings can be configured in-app and persisted locally:
 Optional `.env` defaults:
 
 ```env
+ARC_SCREENSHOT_CAPTURE_DELAY_MS=2500
 ARC_SCREENSHOT_GRID_COLUMNS=10
 ARC_SCREENSHOT_GRID_ROWS=7
 ARC_SCREENSHOT_SLOT_PADDING_PERCENT=12
@@ -294,7 +298,7 @@ Expected `Tab` flow order:
 3. Planning workspace toggle
 4. User key input
 5. `Load / Refresh Game Data`
-6. `Import Inventory Screenshots`
+6. `Capture Inventory From Screen`
 7. `Auto Sync Progress`
 8. `Run API Diagnostics`
 9. Dashboard filter input

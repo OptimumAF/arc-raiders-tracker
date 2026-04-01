@@ -22,6 +22,8 @@ pub fn ApiPanel(
     on_startup_user_cache_ttl_input: EventHandler<FormEvent>,
     image_prefetch_count: String,
     on_image_prefetch_count_input: EventHandler<FormEvent>,
+    screenshot_capture_delay_ms: String,
+    on_screenshot_capture_delay_input: EventHandler<FormEvent>,
     screenshot_grid_columns: String,
     on_screenshot_grid_columns_input: EventHandler<FormEvent>,
     screenshot_grid_rows: String,
@@ -49,6 +51,7 @@ pub fn ApiPanel(
     diagnostics_running: bool,
     on_load_data: EventHandler<MouseEvent>,
     on_scan_inventory: EventHandler<MouseEvent>,
+    on_import_inventory: EventHandler<MouseEvent>,
     on_scan_inventory_api: EventHandler<MouseEvent>,
     on_auto_sync: EventHandler<MouseEvent>,
     on_run_diagnostics: EventHandler<MouseEvent>,
@@ -72,7 +75,7 @@ pub fn ApiPanel(
                 button {
                     disabled: scanning_inventory,
                     onclick: move |evt| on_scan_inventory.call(evt),
-                    if scanning_inventory { "Importing..." } else { "Import Inventory Screenshots" }
+                    if scanning_inventory { "Capturing..." } else { "Capture Inventory From Screen" }
                 }
                 button {
                     disabled: syncing_progress,
@@ -111,7 +114,7 @@ pub fn ApiPanel(
                             oninput: move |evt| on_user_key_input.call(evt),
                         }
                     }
-                    p { class: "muted", "Screenshot import is the primary inventory scanner. Use the API stash sync below only as fallback when screenshots are unavailable." }
+                    p { class: "muted", "On-screen capture is the primary inventory scanner. Click capture, switch to the game during the countdown, and let the app scan the resulting screenshot. Use file import or the API stash sync below only as fallback." }
                     div { class: "settings-grid",
                         div { class: "settings-field",
                             label { class: "field-label", "API min interval (ms)" }
@@ -181,6 +184,16 @@ pub fn ApiPanel(
                                 step: "1",
                                 value: "{image_prefetch_count}",
                                 oninput: move |evt| on_image_prefetch_count_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Capture delay (ms)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "100",
+                                value: "{screenshot_capture_delay_ms}",
+                                oninput: move |evt| on_screenshot_capture_delay_input.call(evt),
                             }
                         }
                         div { class: "settings-field",
@@ -256,6 +269,18 @@ pub fn ApiPanel(
                         button {
                             class: "ghost",
                             disabled: scanning_inventory,
+                            onclick: move |evt| on_import_inventory.call(evt),
+                            if scanning_inventory {
+                                "Importing Screenshots..."
+                            } else {
+                                "Import Inventory Screenshots (Manual)"
+                            }
+                        }
+                    }
+                    div { class: "actions settings-actions",
+                        button {
+                            class: "ghost",
+                            disabled: scanning_inventory,
                             onclick: move |evt| on_scan_inventory_api.call(evt),
                             if scanning_inventory {
                                 "Syncing API Inventory..."
@@ -284,7 +309,7 @@ pub fn ApiPanel(
                             if clearing_cache { "Clearing..." } else { "Clear All Cache" }
                         }
                     }
-                    p { class: "muted", "For best results, import tightly cropped screenshots of the stash grid. User keys grant access to personal data. Keep them user-provided and revocable." }
+                    p { class: "muted", "For best results, capture or import tightly cropped views of the stash grid. User keys grant access to personal data. Keep them user-provided and revocable." }
                 }
             }
             if let Some(progress) = progress.as_ref() {

@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 mod api;
 mod cache;
+mod capture;
 mod domain;
 mod http;
 mod parsing;
@@ -21,6 +22,7 @@ use cache::{
     read_cached_remote_image_data_uri, save_tracked_state, short_hash, write_cache_typed,
     write_cached_remote_image,
 };
+use capture::capture_primary_inventory_screenshot;
 use dioxus::desktop::{Config as DesktopConfig, WindowBuilder, tao::window::Icon};
 use dioxus::prelude::*;
 pub use domain::{
@@ -517,7 +519,153 @@ fn App() -> Element {
         }
     };
 
-    let scan_inventory_action = {
+    let capture_inventory_action = {
+        let static_data = static_data.clone();
+        let inventory_counts = inventory_counts.clone();
+        let runtime_settings = runtime_settings.clone();
+        let mut scanning_inventory = scanning_inventory.clone();
+        let mut status_message = status_message.clone();
+        let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
+        move |_| {
+            if *scanning_inventory.read() {
+                return;
+            }
+
+            let data = match static_data.read().as_ref() {
+                Some(data) => Arc::clone(data),
+                None => {
+                    let message =
+                        "Load static game data first, then capture inventory from the screen."
+                            .to_string();
+                    error_message.set(message.clone());
+                    enqueue_toast(toasts.clone(), ToastKind::Error, message);
+                    return;
+                }
+            };
+
+            let capture_delay_ms = runtime_settings.read().screenshot_capture_delay_ms;
+
+            scanning_inventory.set(true);
+            error_message.set(String::new());
+            status_message.set(format!(
+                "Prepare the game window. Capturing your screen in {:.1}s...",
+                capture_delay_ms as f32 / 1000.0
+            ));
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                if capture_delay_ms == 0 {
+                    "Capturing inventory from the primary display...".to_string()
+                } else {
+                    format!(
+                        "Capturing inventory from the primary display in {:.1}s. Switch to the game now.",
+                        capture_delay_ms as f32 / 1000.0
+                    )
+                },
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "Capturing inventory".to_string(),
+                detail: "Waiting for countdown, then matching slot icons and reading stack counts"
+                    .to_string(),
+                current: 0,
+                total: 1,
+                indeterminate: true,
+            }));
+
+            let mut inventory_counts = inventory_counts.clone();
+            let mut scanning_inventory = scanning_inventory.clone();
+            let mut status_message = status_message.clone();
+            let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
+
+            spawn(async move {
+                info!(
+                    capture_delay_ms,
+                    "capture_inventory_action: capturing primary display"
+                );
+                match tokio::task::spawn_blocking(move || {
+                    let captured_path = capture_primary_inventory_screenshot(capture_delay_ms)?;
+                    let scan = scan_inventory_screenshots(
+                        data.as_ref(),
+                        std::slice::from_ref(&captured_path),
+                    )?;
+                    Ok::<_, anyhow::Error>((captured_path, scan))
+                })
+                .await
+                {
+                    Ok(Ok((captured_path, scan))) => {
+                        let unique = scan.counts.len();
+                        let total: u32 = scan.counts.values().sum();
+                        let matched_slots = scan.matched_slots;
+                        let unmatched_slots = scan.unmatched_slots;
+                        let quantity_ocr_hits = scan.quantity_ocr_hits;
+                        let quantity_fallbacks = scan.quantity_fallbacks;
+                        let warnings = scan.warnings;
+                        inventory_counts.set(scan.counts);
+
+                        let mut summary = format!(
+                            "Screen capture scan complete: {total} total items across {unique} unique item types. Matched {matched_slots} slots, {unmatched_slots} unmatched."
+                        );
+                        if !warnings.is_empty() {
+                            summary.push_str(" Warnings: ");
+                            summary.push_str(&warnings.join(" | "));
+                        }
+                        status_message.set(summary);
+
+                        let toast_message = if warnings.is_empty() {
+                            format!(
+                                "Captured and scanned {unique} item types. OCR quantities: {quantity_ocr_hits}, fallback stacks: {quantity_fallbacks}."
+                            )
+                        } else {
+                            format!(
+                                "Captured screen scan with {} warning(s). OCR quantities: {quantity_ocr_hits}, fallback stacks: {quantity_fallbacks}.",
+                                warnings.len()
+                            )
+                        };
+                        enqueue_toast(
+                            toasts,
+                            if warnings.is_empty() {
+                                ToastKind::Success
+                            } else {
+                                ToastKind::Warning
+                            },
+                            toast_message,
+                        );
+                        info!(
+                            total,
+                            unique,
+                            matched_slots,
+                            unmatched_slots,
+                            quantity_ocr_hits,
+                            quantity_fallbacks,
+                            capture_path = %captured_path.display(),
+                            "capture_inventory_action: capture scan complete"
+                        );
+                    }
+                    Ok(Err(err)) => {
+                        error!(error = %err, "capture_inventory_action: capture scan failed");
+                        let message = format!("On-screen inventory capture failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                    }
+                    Err(err) => {
+                        error!(error = %err, "capture_inventory_action: capture worker failed");
+                        let message =
+                            format!("On-screen inventory capture failed to complete: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                    }
+                }
+                operation_progress.set(None);
+                scanning_inventory.set(false);
+            });
+        }
+    };
+
+    let import_inventory_action = {
         let static_data = static_data.clone();
         let inventory_counts = inventory_counts.clone();
         let mut scanning_inventory = scanning_inventory.clone();
@@ -574,7 +722,7 @@ fn App() -> Element {
                 let screenshot_count = selected_paths.len();
                 info!(
                     screenshots = screenshot_count,
-                    "scan_inventory_action: importing inventory screenshots"
+                    "import_inventory_action: importing inventory screenshots"
                 );
                 match tokio::task::spawn_blocking(move || {
                     scan_inventory_screenshots(data.as_ref(), &selected_paths)
@@ -626,17 +774,17 @@ fn App() -> Element {
                             unmatched_slots,
                             quantity_ocr_hits,
                             quantity_fallbacks,
-                            "scan_inventory_action: screenshot import complete"
+                            "import_inventory_action: screenshot import complete"
                         );
                     }
                     Ok(Err(err)) => {
-                        error!(error = %err, "scan_inventory_action: screenshot import failed");
+                        error!(error = %err, "import_inventory_action: screenshot import failed");
                         let message = format!("Screenshot inventory import failed: {err}");
                         error_message.set(message.clone());
                         enqueue_toast(toasts, ToastKind::Error, message);
                     }
                     Err(err) => {
-                        error!(error = %err, "scan_inventory_action: screenshot worker failed");
+                        error!(error = %err, "import_inventory_action: screenshot worker failed");
                         let message =
                             format!("Screenshot inventory import failed to complete: {err}");
                         error_message.set(message.clone());
@@ -1366,6 +1514,19 @@ fn App() -> Element {
                             }
                         }
                     },
+                    screenshot_capture_delay_ms: settings_snapshot
+                        .screenshot_capture_delay_ms
+                        .to_string(),
+                    on_screenshot_capture_delay_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.screenshot_capture_delay_ms = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
                     screenshot_grid_columns: settings_snapshot.screenshot_grid_columns.to_string(),
                     on_screenshot_grid_columns_input: {
                         let mut runtime_settings = runtime_settings.clone();
@@ -1574,7 +1735,8 @@ fn App() -> Element {
                     syncing_progress: *syncing_progress.read(),
                     diagnostics_running: *diagnostics_running.read(),
                     on_load_data: load_data_action,
-                    on_scan_inventory: scan_inventory_action,
+                    on_scan_inventory: capture_inventory_action,
+                    on_import_inventory: import_inventory_action,
                     on_scan_inventory_api: scan_inventory_api_action,
                     on_auto_sync: auto_sync_action,
                     on_run_diagnostics: api_diagnostics_action,
