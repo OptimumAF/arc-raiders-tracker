@@ -25,6 +25,18 @@ pub(crate) struct AppRuntimeSettings {
     pub image_prefetch_count: usize,
     #[serde(default = "default_screenshot_capture_delay_ms")]
     pub screenshot_capture_delay_ms: u64,
+    #[serde(default = "default_screenshot_session_captures")]
+    pub screenshot_session_captures: usize,
+    #[serde(default = "default_screenshot_session_interval_ms")]
+    pub screenshot_session_interval_ms: u64,
+    #[serde(default = "default_capture_crop_left_percent")]
+    pub capture_crop_left_percent: u32,
+    #[serde(default = "default_capture_crop_top_percent")]
+    pub capture_crop_top_percent: u32,
+    #[serde(default = "default_capture_crop_width_percent")]
+    pub capture_crop_width_percent: u32,
+    #[serde(default = "default_capture_crop_height_percent")]
+    pub capture_crop_height_percent: u32,
     #[serde(default = "default_screenshot_grid_columns")]
     pub screenshot_grid_columns: u32,
     #[serde(default = "default_screenshot_grid_rows")]
@@ -78,6 +90,26 @@ impl AppRuntimeSettings {
             screenshot_capture_delay_ms: first_non_empty_env(&["ARC_SCREENSHOT_CAPTURE_DELAY_MS"])
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(default_screenshot_capture_delay_ms()),
+            screenshot_session_captures: first_non_empty_env(&["ARC_SCREENSHOT_SESSION_CAPTURES"])
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(default_screenshot_session_captures()),
+            screenshot_session_interval_ms: first_non_empty_env(&[
+                "ARC_SCREENSHOT_SESSION_INTERVAL_MS",
+            ])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(default_screenshot_session_interval_ms()),
+            capture_crop_left_percent: first_non_empty_env(&["ARC_CAPTURE_CROP_LEFT_PERCENT"])
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(default_capture_crop_left_percent()),
+            capture_crop_top_percent: first_non_empty_env(&["ARC_CAPTURE_CROP_TOP_PERCENT"])
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(default_capture_crop_top_percent()),
+            capture_crop_width_percent: first_non_empty_env(&["ARC_CAPTURE_CROP_WIDTH_PERCENT"])
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(default_capture_crop_width_percent()),
+            capture_crop_height_percent: first_non_empty_env(&["ARC_CAPTURE_CROP_HEIGHT_PERCENT"])
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(default_capture_crop_height_percent()),
             screenshot_grid_columns: first_non_empty_env(&["ARC_SCREENSHOT_GRID_COLUMNS"])
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(default_screenshot_grid_columns()),
@@ -153,6 +185,30 @@ fn default_image_prefetch_count() -> usize {
 
 fn default_screenshot_capture_delay_ms() -> u64 {
     2500
+}
+
+fn default_screenshot_session_captures() -> usize {
+    6
+}
+
+fn default_screenshot_session_interval_ms() -> u64 {
+    1400
+}
+
+fn default_capture_crop_left_percent() -> u32 {
+    0
+}
+
+fn default_capture_crop_top_percent() -> u32 {
+    0
+}
+
+fn default_capture_crop_width_percent() -> u32 {
+    100
+}
+
+fn default_capture_crop_height_percent() -> u32 {
+    100
 }
 
 fn default_screenshot_grid_columns() -> u32 {

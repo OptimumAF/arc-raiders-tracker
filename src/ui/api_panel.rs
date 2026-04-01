@@ -24,6 +24,18 @@ pub fn ApiPanel(
     on_image_prefetch_count_input: EventHandler<FormEvent>,
     screenshot_capture_delay_ms: String,
     on_screenshot_capture_delay_input: EventHandler<FormEvent>,
+    screenshot_session_captures: String,
+    on_screenshot_session_captures_input: EventHandler<FormEvent>,
+    screenshot_session_interval_ms: String,
+    on_screenshot_session_interval_input: EventHandler<FormEvent>,
+    capture_crop_left_percent: String,
+    on_capture_crop_left_percent_input: EventHandler<FormEvent>,
+    capture_crop_top_percent: String,
+    on_capture_crop_top_percent_input: EventHandler<FormEvent>,
+    capture_crop_width_percent: String,
+    on_capture_crop_width_percent_input: EventHandler<FormEvent>,
+    capture_crop_height_percent: String,
+    on_capture_crop_height_percent_input: EventHandler<FormEvent>,
     screenshot_grid_columns: String,
     on_screenshot_grid_columns_input: EventHandler<FormEvent>,
     screenshot_grid_rows: String,
@@ -51,6 +63,7 @@ pub fn ApiPanel(
     diagnostics_running: bool,
     on_load_data: EventHandler<MouseEvent>,
     on_scan_inventory: EventHandler<MouseEvent>,
+    on_capture_scroll_session: EventHandler<MouseEvent>,
     on_import_inventory: EventHandler<MouseEvent>,
     on_scan_inventory_api: EventHandler<MouseEvent>,
     on_auto_sync: EventHandler<MouseEvent>,
@@ -76,6 +89,11 @@ pub fn ApiPanel(
                     disabled: scanning_inventory,
                     onclick: move |evt| on_scan_inventory.call(evt),
                     if scanning_inventory { "Capturing..." } else { "Capture Inventory From Screen" }
+                }
+                button {
+                    disabled: scanning_inventory,
+                    onclick: move |evt| on_capture_scroll_session.call(evt),
+                    if scanning_inventory { "Capturing Session..." } else { "Capture Scroll Session" }
                 }
                 button {
                     disabled: syncing_progress,
@@ -114,7 +132,7 @@ pub fn ApiPanel(
                             oninput: move |evt| on_user_key_input.call(evt),
                         }
                     }
-                    p { class: "muted", "On-screen capture is the primary inventory scanner. Click capture, switch to the game during the countdown, and let the app scan the resulting screenshot. Use file import or the API stash sync below only as fallback." }
+                    p { class: "muted", "On-screen capture is the primary inventory scanner. Click capture, switch to the game during the countdown, and let the app scan the resulting screenshot. Scroll sessions take repeated captures while you scroll manually and deduplicate overlapping rows." }
                     div { class: "settings-grid",
                         div { class: "settings-field",
                             label { class: "field-label", "API min interval (ms)" }
@@ -197,6 +215,70 @@ pub fn ApiPanel(
                             }
                         }
                         div { class: "settings-field",
+                            label { class: "field-label", "Scroll session captures" }
+                            input {
+                                r#type: "number",
+                                min: "2",
+                                step: "1",
+                                value: "{screenshot_session_captures}",
+                                oninput: move |evt| on_screenshot_session_captures_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Scroll session interval (ms)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                step: "100",
+                                value: "{screenshot_session_interval_ms}",
+                                oninput: move |evt| on_screenshot_session_interval_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Capture crop left (%)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                max: "99",
+                                step: "1",
+                                value: "{capture_crop_left_percent}",
+                                oninput: move |evt| on_capture_crop_left_percent_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Capture crop top (%)" }
+                            input {
+                                r#type: "number",
+                                min: "0",
+                                max: "99",
+                                step: "1",
+                                value: "{capture_crop_top_percent}",
+                                oninput: move |evt| on_capture_crop_top_percent_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Capture crop width (%)" }
+                            input {
+                                r#type: "number",
+                                min: "1",
+                                max: "100",
+                                step: "1",
+                                value: "{capture_crop_width_percent}",
+                                oninput: move |evt| on_capture_crop_width_percent_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "field-label", "Capture crop height (%)" }
+                            input {
+                                r#type: "number",
+                                min: "1",
+                                max: "100",
+                                step: "1",
+                                value: "{capture_crop_height_percent}",
+                                oninput: move |evt| on_capture_crop_height_percent_input.call(evt),
+                            }
+                        }
+                        div { class: "settings-field",
                             label { class: "field-label", "Screenshot grid columns" }
                             input {
                                 r#type: "number",
@@ -269,6 +351,18 @@ pub fn ApiPanel(
                         button {
                             class: "ghost",
                             disabled: scanning_inventory,
+                            onclick: move |evt| on_capture_scroll_session.call(evt),
+                            if scanning_inventory {
+                                "Capturing Scroll Session..."
+                            } else {
+                                "Start Capture Scroll Session"
+                            }
+                        }
+                    }
+                    div { class: "actions settings-actions",
+                        button {
+                            class: "ghost",
+                            disabled: scanning_inventory,
                             onclick: move |evt| on_import_inventory.call(evt),
                             if scanning_inventory {
                                 "Importing Screenshots..."
@@ -309,7 +403,7 @@ pub fn ApiPanel(
                             if clearing_cache { "Clearing..." } else { "Clear All Cache" }
                         }
                     }
-                    p { class: "muted", "For best results, capture or import tightly cropped views of the stash grid. User keys grant access to personal data. Keep them user-provided and revocable." }
+                    p { class: "muted", "For best results, tune the capture crop percentages so the captured region contains only the stash grid, then use scroll sessions to walk down the inventory gradually. User keys grant access to personal data. Keep them user-provided and revocable." }
                 }
             }
             if let Some(progress) = progress.as_ref() {

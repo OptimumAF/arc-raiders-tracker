@@ -22,7 +22,7 @@ use cache::{
     read_cached_remote_image_data_uri, save_tracked_state, short_hash, write_cache_typed,
     write_cached_remote_image,
 };
-use capture::capture_primary_inventory_screenshot;
+use capture::{CaptureRegionPercent, capture_primary_inventory_screenshot};
 use dioxus::desktop::{Config as DesktopConfig, WindowBuilder, tao::window::Icon};
 use dioxus::prelude::*;
 pub use domain::{
@@ -545,7 +545,9 @@ fn App() -> Element {
                 }
             };
 
-            let capture_delay_ms = runtime_settings.read().screenshot_capture_delay_ms;
+            let settings = runtime_settings.read().clone();
+            let capture_delay_ms = settings.screenshot_capture_delay_ms;
+            let capture_region = capture_region_from_settings(&settings);
 
             scanning_inventory.set(true);
             error_message.set(String::new());
@@ -587,7 +589,8 @@ fn App() -> Element {
                     "capture_inventory_action: capturing primary display"
                 );
                 match tokio::task::spawn_blocking(move || {
-                    let captured_path = capture_primary_inventory_screenshot(capture_delay_ms)?;
+                    let captured_path =
+                        capture_primary_inventory_screenshot(capture_delay_ms, capture_region)?;
                     let scan = scan_inventory_screenshots(
                         data.as_ref(),
                         std::slice::from_ref(&captured_path),
@@ -659,6 +662,236 @@ fn App() -> Element {
                         enqueue_toast(toasts, ToastKind::Error, message);
                     }
                 }
+                operation_progress.set(None);
+                scanning_inventory.set(false);
+            });
+        }
+    };
+
+    let capture_scroll_session_action = {
+        let static_data = static_data.clone();
+        let inventory_counts = inventory_counts.clone();
+        let runtime_settings = runtime_settings.clone();
+        let mut scanning_inventory = scanning_inventory.clone();
+        let mut status_message = status_message.clone();
+        let mut error_message = error_message.clone();
+        let mut operation_progress = operation_progress.clone();
+        let toasts = toasts.clone();
+        move |_| {
+            if *scanning_inventory.read() {
+                return;
+            }
+
+            let data = match static_data.read().as_ref() {
+                Some(data) => Arc::clone(data),
+                None => {
+                    let message =
+                        "Load static game data first, then start a capture scroll session."
+                            .to_string();
+                    error_message.set(message.clone());
+                    enqueue_toast(toasts.clone(), ToastKind::Error, message);
+                    return;
+                }
+            };
+
+            let settings = runtime_settings.read().clone();
+            let capture_delay_ms = settings.screenshot_capture_delay_ms;
+            let session_captures = settings.screenshot_session_captures.max(2);
+            let session_interval_ms = settings.screenshot_session_interval_ms;
+            let capture_region = capture_region_from_settings(&settings);
+
+            scanning_inventory.set(true);
+            error_message.set(String::new());
+            status_message.set(format!(
+                "Capture scroll session queued: first capture in {:.1}s, then {} more capture(s) every {:.1}s while you scroll the stash.",
+                capture_delay_ms as f32 / 1000.0,
+                session_captures.saturating_sub(1),
+                session_interval_ms as f32 / 1000.0
+            ));
+            enqueue_toast(
+                toasts.clone(),
+                ToastKind::Info,
+                format!(
+                    "Scroll session starting: first capture in {:.1}s, then {} capture(s) every {:.1}s while you scroll manually.",
+                    capture_delay_ms as f32 / 1000.0,
+                    session_captures.saturating_sub(1),
+                    session_interval_ms as f32 / 1000.0
+                ),
+            );
+            operation_progress.set(Some(OperationProgress {
+                label: "Capture scroll session".to_string(),
+                detail: "Waiting for the first capture".to_string(),
+                current: 0,
+                total: session_captures as u32,
+                indeterminate: false,
+            }));
+
+            let mut inventory_counts = inventory_counts.clone();
+            let mut scanning_inventory = scanning_inventory.clone();
+            let mut status_message = status_message.clone();
+            let mut error_message = error_message.clone();
+            let mut operation_progress = operation_progress.clone();
+            let toasts = toasts.clone();
+
+            spawn(async move {
+                let mut captured_paths = Vec::with_capacity(session_captures);
+                for index in 0..session_captures {
+                    let delay_ms = if index == 0 {
+                        capture_delay_ms
+                    } else {
+                        session_interval_ms
+                    };
+                    let step_number = index + 1;
+
+                    if delay_ms > 0 {
+                        let step_message = if index == 0 {
+                            format!(
+                                "Scroll session: first capture in {:.1}s. Switch to the game now.",
+                                delay_ms as f32 / 1000.0
+                            )
+                        } else {
+                            format!(
+                                "Scroll session: capture {step_number}/{session_captures} in {:.1}s. Scroll to the next stash position now.",
+                                delay_ms as f32 / 1000.0
+                            )
+                        };
+                        status_message.set(step_message.clone());
+                        operation_progress.set(Some(OperationProgress {
+                            label: "Capture scroll session".to_string(),
+                            detail: step_message,
+                            current: index as u32,
+                            total: session_captures as u32,
+                            indeterminate: false,
+                        }));
+                    }
+
+                    match tokio::task::spawn_blocking(move || {
+                        capture_primary_inventory_screenshot(delay_ms, capture_region)
+                    })
+                    .await
+                    {
+                        Ok(Ok(captured_path)) => {
+                            info!(
+                                step = step_number,
+                                total_steps = session_captures,
+                                capture_path = %captured_path.display(),
+                                "capture_scroll_session_action: captured session frame"
+                            );
+                            captured_paths.push(captured_path);
+                            operation_progress.set(Some(OperationProgress {
+                                label: "Capture scroll session".to_string(),
+                                detail: format!(
+                                    "Captured {step_number}/{session_captures} frame(s)."
+                                ),
+                                current: step_number as u32,
+                                total: session_captures as u32,
+                                indeterminate: false,
+                            }));
+                        }
+                        Ok(Err(err)) => {
+                            error!(
+                                error = %err,
+                                step = step_number,
+                                "capture_scroll_session_action: capture failed"
+                            );
+                            let message = format!(
+                                "Capture scroll session failed on capture {step_number}: {err}"
+                            );
+                            error_message.set(message.clone());
+                            enqueue_toast(toasts, ToastKind::Error, message);
+                            operation_progress.set(None);
+                            scanning_inventory.set(false);
+                            return;
+                        }
+                        Err(err) => {
+                            error!(
+                                error = %err,
+                                step = step_number,
+                                "capture_scroll_session_action: capture worker failed"
+                            );
+                            let message = format!(
+                                "Capture scroll session failed to complete capture {step_number}: {err}"
+                            );
+                            error_message.set(message.clone());
+                            enqueue_toast(toasts, ToastKind::Error, message);
+                            operation_progress.set(None);
+                            scanning_inventory.set(false);
+                            return;
+                        }
+                    }
+                }
+
+                status_message.set("Analyzing capture scroll session...".to_string());
+                operation_progress.set(Some(OperationProgress {
+                    label: "Capture scroll session".to_string(),
+                    detail: "Analyzing overlap across captured stash frames".to_string(),
+                    current: session_captures as u32,
+                    total: session_captures as u32,
+                    indeterminate: true,
+                }));
+
+                match tokio::task::spawn_blocking(move || {
+                    scan_inventory_screenshots(data.as_ref(), &captured_paths)
+                })
+                .await
+                {
+                    Ok(Ok(scan)) => {
+                        let unique = scan.counts.len();
+                        let total: u32 = scan.counts.values().sum();
+                        let merged_rows = scan.merged_rows;
+                        let merged_slots = scan.merged_slots;
+                        let overlap_rows_removed = scan.overlap_rows_removed;
+                        let warnings = scan.warnings;
+                        inventory_counts.set(scan.counts);
+
+                        let mut summary = format!(
+                            "Capture scroll session complete: {total} total items across {unique} unique item types from {session_captures} captures. Merged {merged_rows} visible rows into {merged_slots} counted slots and removed {overlap_rows_removed} overlapping row(s)."
+                        );
+                        if !warnings.is_empty() {
+                            summary.push_str(" Warnings: ");
+                            summary.push_str(&warnings.join(" | "));
+                        }
+                        status_message.set(summary);
+                        enqueue_toast(
+                            toasts,
+                            if warnings.is_empty() {
+                                ToastKind::Success
+                            } else {
+                                ToastKind::Warning
+                            },
+                            if warnings.is_empty() {
+                                format!(
+                                    "Scroll session scanned {unique} item types from {session_captures} captures."
+                                )
+                            } else {
+                                format!(
+                                    "Scroll session scanned with {} warning(s) across {session_captures} captures.",
+                                    warnings.len()
+                                )
+                            },
+                        );
+                    }
+                    Ok(Err(err)) => {
+                        error!(
+                            error = %err,
+                            "capture_scroll_session_action: analysis failed"
+                        );
+                        let message = format!("Capture scroll session analysis failed: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                    }
+                    Err(err) => {
+                        error!(
+                            error = %err,
+                            "capture_scroll_session_action: analysis worker failed"
+                        );
+                        let message =
+                            format!("Capture scroll session failed to finish analysis: {err}");
+                        error_message.set(message.clone());
+                        enqueue_toast(toasts, ToastKind::Error, message);
+                    }
+                }
+
                 operation_progress.set(None);
                 scanning_inventory.set(false);
             });
@@ -1527,6 +1760,96 @@ fn App() -> Element {
                             }
                         }
                     },
+                    screenshot_session_captures: settings_snapshot
+                        .screenshot_session_captures
+                        .to_string(),
+                    on_screenshot_session_captures_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<usize>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.screenshot_session_captures = value.max(2);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    screenshot_session_interval_ms: settings_snapshot
+                        .screenshot_session_interval_ms
+                        .to_string(),
+                    on_screenshot_session_interval_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u64>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.screenshot_session_interval_ms = value;
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    capture_crop_left_percent: settings_snapshot
+                        .capture_crop_left_percent
+                        .to_string(),
+                    on_capture_crop_left_percent_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.capture_crop_left_percent = value.min(99);
+                                if next.capture_crop_left_percent + next.capture_crop_width_percent > 100 {
+                                    next.capture_crop_width_percent =
+                                        100u32.saturating_sub(next.capture_crop_left_percent).max(1);
+                                }
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    capture_crop_top_percent: settings_snapshot
+                        .capture_crop_top_percent
+                        .to_string(),
+                    on_capture_crop_top_percent_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                next.capture_crop_top_percent = value.min(99);
+                                if next.capture_crop_top_percent + next.capture_crop_height_percent > 100 {
+                                    next.capture_crop_height_percent =
+                                        100u32.saturating_sub(next.capture_crop_top_percent).max(1);
+                                }
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    capture_crop_width_percent: settings_snapshot
+                        .capture_crop_width_percent
+                        .to_string(),
+                    on_capture_crop_width_percent_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                let max_width =
+                                    100u32.saturating_sub(next.capture_crop_left_percent).max(1);
+                                next.capture_crop_width_percent = value.clamp(1, max_width);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
+                    capture_crop_height_percent: settings_snapshot
+                        .capture_crop_height_percent
+                        .to_string(),
+                    on_capture_crop_height_percent_input: {
+                        let mut runtime_settings = runtime_settings.clone();
+                        move |evt: FormEvent| {
+                            if let Ok(value) = evt.value().parse::<u32>() {
+                                let mut next = runtime_settings.read().clone();
+                                let max_height =
+                                    100u32.saturating_sub(next.capture_crop_top_percent).max(1);
+                                next.capture_crop_height_percent = value.clamp(1, max_height);
+                                runtime_settings.set(next);
+                            }
+                        }
+                    },
                     screenshot_grid_columns: settings_snapshot.screenshot_grid_columns.to_string(),
                     on_screenshot_grid_columns_input: {
                         let mut runtime_settings = runtime_settings.clone();
@@ -1736,6 +2059,7 @@ fn App() -> Element {
                     diagnostics_running: *diagnostics_running.read(),
                     on_load_data: load_data_action,
                     on_scan_inventory: capture_inventory_action,
+                    on_capture_scroll_session: capture_scroll_session_action,
                     on_import_inventory: import_inventory_action,
                     on_scan_inventory_api: scan_inventory_api_action,
                     on_auto_sync: auto_sync_action,
@@ -1862,6 +2186,24 @@ fn item_image_src(data: &ArcData, item_id: &str) -> String {
     }
 
     String::new()
+}
+
+fn capture_region_from_settings(settings: &AppRuntimeSettings) -> CaptureRegionPercent {
+    let left_percent = settings.capture_crop_left_percent.min(99);
+    let top_percent = settings.capture_crop_top_percent.min(99);
+    let width_percent = settings
+        .capture_crop_width_percent
+        .clamp(1, 100u32.saturating_sub(left_percent).max(1));
+    let height_percent = settings
+        .capture_crop_height_percent
+        .clamp(1, 100u32.saturating_sub(top_percent).max(1));
+
+    CaptureRegionPercent {
+        left_percent,
+        top_percent,
+        width_percent,
+        height_percent,
+    }
 }
 
 fn enqueue_toast(mut toasts: Signal<Vec<Toast>>, kind: ToastKind, message: String) {

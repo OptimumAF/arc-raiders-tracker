@@ -29,6 +29,9 @@ pub(crate) struct ScreenshotInventoryScanResult {
     pub unmatched_slots: usize,
     pub quantity_ocr_hits: usize,
     pub quantity_fallbacks: usize,
+    pub merged_rows: usize,
+    pub merged_slots: usize,
+    pub overlap_rows_removed: usize,
     pub warnings: Vec<String>,
 }
 
@@ -55,6 +58,30 @@ struct OcrWord {
     height: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecognizedSlot {
+    item_id: String,
+    quantity: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum SlotState {
+    #[default]
+    Empty,
+    Unknown,
+    Item(RecognizedSlot),
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScreenshotGridScan {
+    rows: Vec<Vec<SlotState>>,
+    matched_slots: usize,
+    unmatched_slots: usize,
+    quantity_ocr_hits: usize,
+    quantity_fallbacks: usize,
+    warnings: Vec<String>,
+}
+
 pub(crate) fn select_inventory_screenshot_files() -> Option<Vec<PathBuf>> {
     rfd::FileDialog::new()
         .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
@@ -76,15 +103,19 @@ pub(crate) fn scan_inventory_screenshots(
         )
     })?;
 
-    let templates = load_item_templates(images_dir, data)?;
+    let (templates, template_warnings) = load_item_templates(images_dir, data);
     if templates.is_empty() {
         return Err(anyhow!(
-            "No local item templates were found for screenshot matching."
+            "No readable local item templates were found for screenshot matching."
         ));
     }
 
     let settings = runtime_settings_snapshot();
-    let mut result = ScreenshotInventoryScanResult::default();
+    let mut result = ScreenshotInventoryScanResult {
+        warnings: template_warnings,
+        ..Default::default()
+    };
+    let mut scans = Vec::with_capacity(paths.len());
 
     info!(
         files = paths.len(),
@@ -101,7 +132,11 @@ pub(crate) fn scan_inventory_screenshots(
             match ocr_words_for_image(path) {
                 Ok(words) => words,
                 Err(err) => {
-                    warn!(path = %path.display(), error = %err, "screenshot_scan: OCR unavailable for screenshot");
+                    warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "screenshot_scan: OCR unavailable for screenshot"
+                    );
                     result.warnings.push(format!(
                         "{}: quantity OCR unavailable ({err})",
                         path.file_name()
@@ -116,7 +151,6 @@ pub(crate) fn scan_inventory_screenshots(
         };
 
         let file_result = scan_single_screenshot(&image, &templates, &ocr_words, &settings);
-        merge_counts(&mut result.counts, file_result.counts);
         result.files_scanned += 1;
         result.matched_slots += file_result.matched_slots;
         result.unmatched_slots += file_result.unmatched_slots;
@@ -124,7 +158,7 @@ pub(crate) fn scan_inventory_screenshots(
         result.quantity_fallbacks += file_result.quantity_fallbacks;
         result
             .warnings
-            .extend(file_result.warnings.into_iter().map(|warning| {
+            .extend(file_result.warnings.iter().map(|warning| {
                 format!(
                     "{}: {warning}",
                     path.file_name()
@@ -132,12 +166,27 @@ pub(crate) fn scan_inventory_screenshots(
                         .unwrap_or("screenshot")
                 )
             }));
+        scans.push(file_result);
     }
+
+    let (merged_rows, overlap_rows_removed, merge_warnings) = merge_capture_rows(&scans);
+    result.overlap_rows_removed = overlap_rows_removed;
+    result.merged_rows = merged_rows.len();
+    result.merged_slots = merged_rows
+        .iter()
+        .flatten()
+        .filter(|slot| matches!(slot, SlotState::Item(_)))
+        .count();
+    result.counts = counts_from_rows(&merged_rows);
+    result.warnings.extend(merge_warnings);
 
     info!(
         files_scanned = result.files_scanned,
         matched_slots = result.matched_slots,
         unmatched_slots = result.unmatched_slots,
+        merged_rows = result.merged_rows,
+        merged_slots = result.merged_slots,
+        overlap_rows_removed = result.overlap_rows_removed,
         quantity_ocr_hits = result.quantity_ocr_hits,
         quantity_fallbacks = result.quantity_fallbacks,
         unique_items = result.counts.len(),
@@ -152,14 +201,24 @@ fn scan_single_screenshot(
     templates: &[ItemTemplate],
     ocr_words: &[OcrWord],
     settings: &crate::support::AppRuntimeSettings,
-) -> ScreenshotInventoryScanResult {
-    let mut result = ScreenshotInventoryScanResult::default();
-    let columns = settings.screenshot_grid_columns.max(1);
-    let rows = settings.screenshot_grid_rows.max(1);
+) -> ScreenshotGridScan {
+    let columns = settings.screenshot_grid_columns.max(1) as usize;
+    let rows = settings.screenshot_grid_rows.max(1) as usize;
+    let mut result = ScreenshotGridScan {
+        rows: vec![vec![SlotState::Empty; columns]; rows],
+        ..Default::default()
+    };
 
     for row in 0..rows {
         for column in 0..columns {
-            let slot = slot_rect(image.width(), image.height(), columns, rows, column, row);
+            let slot = slot_rect(
+                image.width(),
+                image.height(),
+                columns as u32,
+                rows as u32,
+                column as u32,
+                row as u32,
+            );
             let icon_rect = icon_rect(slot, settings.screenshot_slot_padding_percent);
             let icon_image = crop_image(image, icon_rect);
 
@@ -170,6 +229,7 @@ fn scan_single_screenshot(
             let Some((item_id, best_score, second_score)) = match_item(&icon_image, templates)
             else {
                 result.unmatched_slots += 1;
+                result.rows[row][column] = SlotState::Unknown;
                 continue;
             };
 
@@ -187,6 +247,7 @@ fn scan_single_screenshot(
                     "screenshot_scan: slot match below confidence threshold"
                 );
                 result.unmatched_slots += 1;
+                result.rows[row][column] = SlotState::Unknown;
                 continue;
             }
 
@@ -197,15 +258,17 @@ fn scan_single_screenshot(
                 result.quantity_fallbacks += 1;
             }
 
-            let entry = result.counts.entry(item_id.to_string()).or_insert(0);
-            *entry = entry.saturating_add(quantity);
+            result.rows[row][column] = SlotState::Item(RecognizedSlot {
+                item_id: item_id.to_string(),
+                quantity,
+            });
             result.matched_slots += 1;
         }
     }
 
     if result.matched_slots == 0 {
         result.warnings.push(
-            "No item slots were confidently matched. Check that screenshots are tightly cropped to the inventory grid and that grid rows/columns are configured correctly."
+            "No item slots were confidently matched. Check that captures are tightly cropped to the inventory grid and that grid rows/columns plus capture crop settings are configured correctly."
                 .to_string(),
         );
     } else if result.unmatched_slots > 0 {
@@ -218,8 +281,9 @@ fn scan_single_screenshot(
     result
 }
 
-fn load_item_templates(images_dir: &Path, data: &ArcData) -> Result<Vec<ItemTemplate>> {
+fn load_item_templates(images_dir: &Path, data: &ArcData) -> (Vec<ItemTemplate>, Vec<String>) {
     let mut templates = Vec::new();
+    let mut warnings = Vec::new();
 
     for item_id in data.items_by_id.keys() {
         let image_path = images_dir.join(format!("{item_id}.png"));
@@ -227,15 +291,123 @@ fn load_item_templates(images_dir: &Path, data: &ArcData) -> Result<Vec<ItemTemp
             continue;
         }
 
-        let image = image::open(&image_path)
-            .with_context(|| format!("failed to open template '{}'", image_path.display()))?;
-        templates.push(ItemTemplate {
-            item_id: item_id.clone(),
-            fingerprint: image_fingerprint(&composite_template_image(&image)),
-        });
+        match image::open(&image_path) {
+            Ok(image) => {
+                templates.push(ItemTemplate {
+                    item_id: item_id.clone(),
+                    fingerprint: image_fingerprint(&composite_template_image(&image)),
+                });
+            }
+            Err(err) => {
+                warn!(
+                    path = %image_path.display(),
+                    error = %err,
+                    "screenshot_scan: skipping unreadable local template"
+                );
+                warnings.push(format!(
+                    "Skipped unreadable local item template '{}'.",
+                    image_path.display()
+                ));
+            }
+        }
     }
 
-    Ok(templates)
+    (templates, warnings)
+}
+
+fn counts_from_rows(rows: &[Vec<SlotState>]) -> HashMap<String, u32> {
+    let mut counts = HashMap::<String, u32>::new();
+    for row in rows {
+        for slot in row {
+            if let SlotState::Item(item) = slot {
+                let entry = counts.entry(item.item_id.clone()).or_insert(0);
+                *entry = (*entry).saturating_add(item.quantity);
+            }
+        }
+    }
+    counts
+}
+
+fn merge_capture_rows(scans: &[ScreenshotGridScan]) -> (Vec<Vec<SlotState>>, usize, Vec<String>) {
+    let mut merged_rows = Vec::new();
+    let mut warnings = Vec::new();
+    let mut overlap_rows_removed = 0usize;
+
+    for (index, scan) in scans.iter().enumerate() {
+        if index == 0 {
+            merged_rows.extend(scan.rows.clone());
+            continue;
+        }
+
+        let overlap = find_row_overlap(&merged_rows, &scan.rows);
+        if overlap == 0 {
+            warnings.push(format!(
+                "No overlapping inventory rows were detected between capture {} and {}. Scroll more gradually or increase session captures to reduce duplicate counting risk.",
+                index,
+                index + 1
+            ));
+            merged_rows.extend(scan.rows.clone());
+            continue;
+        }
+
+        if overlap == 1 {
+            warnings.push(format!(
+                "Only 1 overlapping row was detected between capture {} and {}. Counts may be slightly noisy if recognition drifted.",
+                index,
+                index + 1
+            ));
+        }
+
+        overlap_rows_removed = overlap_rows_removed.saturating_add(overlap);
+        merged_rows.extend(scan.rows.iter().skip(overlap).cloned());
+    }
+
+    (merged_rows, overlap_rows_removed, warnings)
+}
+
+fn find_row_overlap(existing: &[Vec<SlotState>], next: &[Vec<SlotState>]) -> usize {
+    let max_overlap = existing.len().min(next.len());
+    for overlap in (1..=max_overlap).rev() {
+        let mut useful_rows = 0usize;
+        let overlap_valid = existing[existing.len() - overlap..]
+            .iter()
+            .zip(next.iter().take(overlap))
+            .all(|(left, right)| {
+                let (compatible, useful) = rows_are_compatible(left, right);
+                if useful {
+                    useful_rows += 1;
+                }
+                compatible
+            });
+
+        if overlap_valid && useful_rows > 0 {
+            return overlap;
+        }
+    }
+
+    0
+}
+
+fn rows_are_compatible(left: &[SlotState], right: &[SlotState]) -> (bool, bool) {
+    if left.len() != right.len() {
+        return (false, false);
+    }
+
+    let mut useful = false;
+    for (left_slot, right_slot) in left.iter().zip(right) {
+        match (left_slot, right_slot) {
+            (SlotState::Empty, SlotState::Empty) => {}
+            (SlotState::Unknown, SlotState::Unknown) => useful = true,
+            (SlotState::Item(left_item), SlotState::Item(right_item))
+                if left_item.item_id == right_item.item_id =>
+            {
+                useful = true;
+            }
+            _ => return (false, useful),
+        }
+    }
+
+    (true, useful)
 }
 
 fn composite_template_image(image: &DynamicImage) -> RgbaImage {
@@ -504,9 +676,63 @@ fn ocr_words_for_image(_path: &Path) -> Result<Vec<OcrWord>> {
     ))
 }
 
-fn merge_counts(base: &mut HashMap<String, u32>, other: HashMap<String, u32>) {
-    for (item_id, quantity) in other {
-        let entry = base.entry(item_id).or_insert(0);
-        *entry = entry.saturating_add(quantity);
+#[cfg(test)]
+mod tests {
+    use super::{
+        RecognizedSlot, ScreenshotGridScan, SlotState, counts_from_rows, merge_capture_rows,
+    };
+
+    fn item(id: &str, quantity: u32) -> SlotState {
+        SlotState::Item(RecognizedSlot {
+            item_id: id.to_string(),
+            quantity,
+        })
+    }
+
+    #[test]
+    fn merge_capture_rows_removes_overlapping_rows() {
+        let first = ScreenshotGridScan {
+            rows: vec![
+                vec![item("a", 1), item("b", 1)],
+                vec![item("c", 1), item("d", 1)],
+                vec![item("e", 1), item("f", 1)],
+            ],
+            ..Default::default()
+        };
+        let second = ScreenshotGridScan {
+            rows: vec![
+                vec![item("c", 1), item("d", 1)],
+                vec![item("e", 1), item("f", 1)],
+                vec![item("g", 1), item("h", 1)],
+            ],
+            ..Default::default()
+        };
+
+        let (rows, overlap_removed, warnings) = merge_capture_rows(&[first, second]);
+        assert_eq!(overlap_removed, 2);
+        assert!(warnings.is_empty());
+        assert_eq!(rows.len(), 4);
+
+        let counts = counts_from_rows(&rows);
+        assert_eq!(counts.get("a"), Some(&1));
+        assert_eq!(counts.get("h"), Some(&1));
+        assert_eq!(counts.values().sum::<u32>(), 8);
+    }
+
+    #[test]
+    fn merge_capture_rows_warns_when_no_overlap_exists() {
+        let first = ScreenshotGridScan {
+            rows: vec![vec![item("a", 1)], vec![item("b", 1)]],
+            ..Default::default()
+        };
+        let second = ScreenshotGridScan {
+            rows: vec![vec![item("x", 1)], vec![item("y", 1)]],
+            ..Default::default()
+        };
+
+        let (rows, overlap_removed, warnings) = merge_capture_rows(&[first, second]);
+        assert_eq!(overlap_removed, 0);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(warnings.len(), 1);
     }
 }

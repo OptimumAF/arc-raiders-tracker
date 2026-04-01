@@ -136,8 +136,9 @@ The app now treats on-screen capture as the primary inventory source because Arc
 
 - Use `Capture Inventory From Screen` in `API + Sync`
 - After clicking capture, switch to the game window during the countdown
+- Use `Capture Scroll Session` to take repeated captures while you scroll the stash manually
 - Load static game data first so the app has the local item image templates
-- Keep the inventory grid tightly framed on screen for best matching results
+- Tune the capture crop percentages so the captured region contains only the inventory grid
 - Optional OCR reads stack counts from the screenshot on Windows builds
 - `Import Inventory Screenshots (Manual)` remains available under `Settings`
 - `Sync Inventory via API (Fallback)` also remains available under `Settings`
@@ -145,6 +146,9 @@ The app now treats on-screen capture as the primary inventory source because Arc
 Screenshot scanner settings can be configured in-app and persisted locally:
 
 - capture delay
+- scroll session capture count
+- scroll session interval
+- capture crop left/top/width/height percentages
 - grid columns
 - grid rows
 - slot padding percentage
@@ -154,11 +158,19 @@ Optional `.env` defaults:
 
 ```env
 ARC_SCREENSHOT_CAPTURE_DELAY_MS=2500
+ARC_SCREENSHOT_SESSION_CAPTURES=6
+ARC_SCREENSHOT_SESSION_INTERVAL_MS=1400
+ARC_CAPTURE_CROP_LEFT_PERCENT=0
+ARC_CAPTURE_CROP_TOP_PERCENT=0
+ARC_CAPTURE_CROP_WIDTH_PERCENT=100
+ARC_CAPTURE_CROP_HEIGHT_PERCENT=100
 ARC_SCREENSHOT_GRID_COLUMNS=10
 ARC_SCREENSHOT_GRID_ROWS=7
 ARC_SCREENSHOT_SLOT_PADDING_PERCENT=12
 ARC_SCREENSHOT_QUANTITY_OCR_ENABLED=true
 ```
+
+When multiple screenshots are scanned together, the app now attempts to detect overlapping visible inventory rows and remove duplicates before counting items. This is what powers the guided scroll session mode.
 
 ## Debug logging
 
@@ -238,7 +250,7 @@ The app now persists tracked goals and caches selected network data on disk to r
   - Default prefetch count: `12`
   - Override: `ARC_IMAGE_PREFETCH_COUNT=12`
 
-The cache TTLs, retry policy, image prefetch count, screenshot scanner settings, and sell filters can all be adjusted at runtime from the in-app `Settings` section. Saved UI settings are persisted in the tracked state file.
+The cache TTLs, retry policy, image prefetch count, screenshot capture/session settings, and sell filters can all be adjusted at runtime from the in-app `Settings` section. Saved UI settings are persisted in the tracked state file.
 
 ## UI modernization (current)
 
@@ -299,10 +311,11 @@ Expected `Tab` flow order:
 4. User key input
 5. `Load / Refresh Game Data`
 6. `Capture Inventory From Screen`
-7. `Auto Sync Progress`
-8. `Run API Diagnostics`
-9. Dashboard filter input
-10. Dashboard tables and planning workspace controls/buttons
+7. `Capture Scroll Session`
+8. `Auto Sync Progress`
+9. `Run API Diagnostics`
+10. Dashboard filter input
+11. Dashboard tables and planning workspace controls/buttons
 
 Accessibility behavior:
 
